@@ -7,6 +7,16 @@ if(!isset($_SESSION['student_id'])){
 
 include 'Database/connect.php';
 
+// Refresh sessions count from DB so it's always up to date
+$s = $conn->prepare("SELECT sessions FROM students WHERE id = ?");
+$s->bind_param("i", $_SESSION['student_id']);
+$s->execute();
+$row = $s->get_result()->fetch_assoc();
+$s->close();
+if($row){
+    $_SESSION['sessions'] = $row['sessions'];
+}
+
 // Fetch latest announcements from DB
 $announcements = [];
 $stmt = $conn->prepare("SELECT * FROM announcements ORDER BY created_at DESC LIMIT 5");
@@ -15,6 +25,7 @@ $result = $stmt->get_result();
 while($row = $result->fetch_assoc()){
     $announcements[] = $row;
 }
+$stmt->close();
 $conn->close();
 ?>
 <!DOCTYPE html>
@@ -76,7 +87,7 @@ $conn->close();
             <div class="detail-row">
                 <span class="detail-label">Remaining Sessions</span>
                 <span class="detail-value">
-                    <span class="sessions-badge"><?php echo $_SESSION['sessions'] ?? 30; ?> sessions</span>
+                    <span class="sessions-badge"><?php echo $_SESSION['sessions']; ?> sessions</span>
                 </span>
             </div>
         </div>

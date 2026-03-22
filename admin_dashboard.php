@@ -42,8 +42,8 @@ $conn->query("CREATE TABLE IF NOT EXISTS sit_in (
 // Handle Sit-in form
 if($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['id_number'])) {
     $id_number = $_POST['id_number'];
-    $purpose = $_POST['purpose'];
-    $lab = $_POST['lab'];
+    $purpose   = $_POST['purpose'];
+    $lab       = $_POST['lab'];
 
     $check = $conn->prepare("SELECT id, first_name, last_name, sessions FROM students WHERE id_number = ?");
     $check->bind_param("s", $id_number);
@@ -58,17 +58,25 @@ if($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['id_number'])) {
             $sit_in_error = "Student has no remaining sessions.";
         } else {
             $new_sessions = $student_row['sessions'] - 1;
-            $db_name = $student_row['first_name'] . ' ' . $student_row['last_name'];
-            $conn->prepare("UPDATE students SET sessions = ? WHERE id_number = ?")->execute() || true;
+            $db_name      = $student_row['first_name'] . ' ' . $student_row['last_name'];
+
+            // Update sessions
             $upd = $conn->prepare("UPDATE students SET sessions = ? WHERE id_number = ?");
             $upd->bind_param("is", $new_sessions, $id_number);
             $upd->execute();
+            $upd->close();
 
+            // Insert sit-in log
             $ins = $conn->prepare("INSERT INTO sit_in (id_number, student_name, purpose, lab, remaining_session, sit_in_date, sit_in_time) VALUES (?, ?, ?, ?, ?, ?, ?)");
-            $today = date('Y-m-d'); $now = date('H:i:s');
+            $today = date('Y-m-d');
+            $now   = date('H:i:s');
             $ins->bind_param("ssssiss", $id_number, $db_name, $purpose, $lab, $new_sessions, $today, $now);
             $ins->execute();
-            header("Location: admin_dashboard.php");
+            $ins->close();
+
+            $check->close();
+            $conn->close();
+            header("Location: admin_dashboard.php?sitin=1");
             exit;
         }
     }
@@ -78,19 +86,20 @@ if($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['id_number'])) {
 // Handle Announcement form
 if($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['message'])) {
     $admin_name = $_SESSION['admin_username'];
-    $ann_date = $_POST['announcement_date'];
-    $message = $_POST['message'];
+    $ann_date   = $_POST['announcement_date'];
+    $message    = $_POST['message'];
     $stmt = $conn->prepare("INSERT INTO announcements (admin_name, announcement_date, message) VALUES (?, ?, ?)");
     $stmt->bind_param("sss", $admin_name, $ann_date, $message);
     $stmt->execute();
+    $stmt->close();
     header("Location: admin_dashboard.php?posted=1");
     exit;
 }
 
 // Stats
-$student_count = $conn->query("SELECT COUNT(*) as c FROM students")->fetch_assoc()['c'];
+$student_count      = $conn->query("SELECT COUNT(*) as c FROM students")->fetch_assoc()['c'];
 $announcement_count = $conn->query("SELECT COUNT(*) as c FROM announcements")->fetch_assoc()['c'];
-$today_sitin_count = $conn->query("SELECT COUNT(*) as c FROM sit_in WHERE sit_in_date = CURDATE()")->fetch_assoc()['c'];
+$today_sitin_count  = $conn->query("SELECT COUNT(*) as c FROM sit_in WHERE sit_in_date = CURDATE()")->fetch_assoc()['c'];
 
 // Monthly data
 $monthly_data = array_fill_keys(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'], 0);
@@ -163,6 +172,13 @@ $conn->close();
         </div>
     </div>
 
+    <!-- SUCCESS ALERT -->
+    <?php if(isset($_GET['sitin'])): ?>
+    <div style="padding:12px 16px;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);color:#15803d;border-radius:10px;font-size:14px;">
+        ✓ Sit-in recorded successfully.
+    </div>
+    <?php endif; ?>
+
     <!-- CHART -->
     <div class="dashboard-card chart-card">
         <div class="card-header">Student Registration Statistics</div>
@@ -221,7 +237,7 @@ $conn->close();
             <form class="announcement-form" method="POST" action="">
                 <div class="form-group">
                     <label>Admin Name</label>
-                    <input type="text" name="admin_name" value="<?php echo $_SESSION['admin_username']; ?>" readonly>
+                    <input type="text" name="admin_name" value="<?php echo htmlspecialchars($_SESSION['admin_username']); ?>" readonly>
                 </div>
                 <div class="form-group">
                     <label>Date</label>
@@ -249,7 +265,7 @@ $conn->close();
         <div class="modal-body">
             <?php if(isset($sit_in_error)): ?>
             <div style="padding:10px 14px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);color:#b91c1c;border-radius:8px;font-size:13px;margin-bottom:14px;">
-                <?php echo $sit_in_error; ?>
+                <?php echo htmlspecialchars($sit_in_error); ?>
             </div>
             <?php endif; ?>
             <form method="POST" action="">
@@ -259,7 +275,7 @@ $conn->close();
                 </div>
                 <div class="form-group">
                     <label>Student Name</label>
-                    <input type="text" name="student_name" id="studentName" placeholder="Auto-filled" readonly required>
+                    <input type="text" name="student_name" id="studentName" placeholder="Auto-filled" readonly>
                 </div>
                 <div class="form-group">
                     <label>Purpose</label>
@@ -289,7 +305,7 @@ $conn->close();
                 </div>
                 <div class="form-group">
                     <label>Remaining Sessions</label>
-                    <input type="number" name="remaining_session" id="remainingSession" placeholder="Auto-filled" readonly required>
+                    <input type="number" name="remaining_session" id="remainingSession" placeholder="Auto-filled" readonly>
                 </div>
                 <div class="modal-actions">
                     <button type="button" class="btn-close" id="closeSitIn2">Cancel</button>
@@ -303,9 +319,13 @@ $conn->close();
 <script>
 const modal = document.getElementById('sitInModal');
 document.getElementById('openSitIn').onclick = () => modal.classList.add('active');
-document.getElementById('closeSitIn').onclick = () => modal.classList.remove('active');
+document.getElementById('closeSitIn').onclick  = () => modal.classList.remove('active');
 document.getElementById('closeSitIn2').onclick = () => modal.classList.remove('active');
 window.onclick = e => { if(e.target === modal) modal.classList.remove('active'); };
+
+<?php if(isset($sit_in_error)): ?>
+modal.classList.add('active');
+<?php endif; ?>
 
 function fetchStudentInfo() {
     const id = document.getElementById('idNumber').value.trim();
@@ -314,13 +334,13 @@ function fetchStudentInfo() {
         .then(r => r.text())
         .then(data => {
             const doc = new DOMParser().parseFromString(data, 'text/html');
-            const el = doc.getElementById('student-data');
+            const el  = doc.getElementById('student-data');
             if(el && el.getAttribute('data-id')) {
-                document.getElementById('studentName').value = el.getAttribute('data-name');
+                document.getElementById('studentName').value      = el.getAttribute('data-name');
                 document.getElementById('remainingSession').value = el.getAttribute('data-sessions');
             } else {
                 alert('Student not found. Please check the ID number.');
-                document.getElementById('studentName').value = '';
+                document.getElementById('studentName').value      = '';
                 document.getElementById('remainingSession').value = '';
             }
         });

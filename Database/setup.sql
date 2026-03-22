@@ -37,9 +37,6 @@ CREATE TABLE IF NOT EXISTS students (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- If table already exists, add profile_picture column:
--- ALTER TABLE students ADD COLUMN profile_picture VARCHAR(255) DEFAULT 'default.png';
-
 -- Create announcements table
 CREATE TABLE IF NOT EXISTS announcements (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -64,5 +61,32 @@ CREATE TABLE IF NOT EXISTS sit_in (
     remaining_session INT NOT NULL,
     sit_in_date DATE NOT NULL,
     sit_in_time TIME NOT NULL,
+    time_out TIME DEFAULT NULL,
+    time_out_date DATE DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create reservations table
+CREATE TABLE IF NOT EXISTS reservations (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    id_number VARCHAR(50) NOT NULL,
+    student_name VARCHAR(200) NOT NULL,
+    purpose VARCHAR(100) NOT NULL,
+    lab VARCHAR(50) NOT NULL,
+    reservation_date DATE NOT NULL,
+    reservation_time TIME NOT NULL,
+    status ENUM('pending','approved','rejected') DEFAULT 'pending',
+    admin_note TEXT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create notifications table
+CREATE TABLE IF NOT EXISTS notifications (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    student_id INT NOT NULL,
+    title VARCHAR(200) NOT NULL,
+    message TEXT NOT NULL,
+    type ENUM('info','success','warning','danger') DEFAULT 'info',
+    is_read TINYINT(1) DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
