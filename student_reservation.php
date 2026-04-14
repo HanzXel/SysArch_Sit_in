@@ -46,7 +46,7 @@ if($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_reservation']))
     $res_hour = (int)date('H', strtotime($res_time));
     if($res_hour < 7 || $res_hour >= 20){
         $error_msg = 'Reservation time must be between 7:00 AM and 8:00 PM.';
-}
+
     } else {
         // Check for duplicate reservation same day + lab
         $dup = $conn->prepare("SELECT id FROM reservations WHERE id_number = ? AND lab = ? AND reservation_date = ? AND status != 'rejected'");

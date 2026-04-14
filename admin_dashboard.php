@@ -39,6 +39,8 @@ $conn->query("CREATE TABLE IF NOT EXISTS sit_in (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )");
 
+$sit_in_error = ""; // Initialize error variable
+
 // Handle Sit-in form
 if($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['id_number'])) {
     $id_number = $_POST['id_number'];
@@ -57,55 +59,39 @@ if($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['id_number'])) {
         if($student_row['sessions'] <= 0) {
             $sit_in_error = "Student has no remaining sessions.";
         } else {
-    $new_sessions = $student_row['sessions'] - 1;
-    $db_name      = $student_row['first_name'] . ' ' . $student_row['last_name'];
+            $new_sessions = $student_row['sessions'] - 1;
+            $db_name      = $student_row['first_name'] . ' ' . $student_row['last_name'];
 
-    // Check for an already active (not timed out) sit-in today
-    $dup_check = $conn->prepare("SELECT id FROM sit_in WHERE id_number = ? AND sit_in_date = CURDATE() AND time_out IS NULL");
-    $dup_check->bind_param("s", $id_number);
-    $dup_check->execute();
-    if($dup_check->get_result()->num_rows > 0){
-        $sit_in_error = "This student already has an active sit-in session today.";
-        $dup_check->close();
-    } else {
-        $dup_check->close();
+            // Check for an already active (not timed out) sit-in today
+            $dup_check = $conn->prepare("SELECT id FROM sit_in WHERE id_number = ? AND sit_in_date = CURDATE() AND time_out IS NULL");
+            $dup_check->bind_param("s", $id_number);
+            $dup_check->execute();
+            
+            if($dup_check->get_result()->num_rows > 0){
+                $sit_in_error = "This student already has an active sit-in session today.";
+                $dup_check->close();
+            } else {
+                $dup_check->close();
 
-        // Update sessions
-        $upd = $conn->prepare("UPDATE students SET sessions = ? WHERE id_number = ?");
-        $upd->bind_param("is", $new_sessions, $id_number);
-        $upd->execute();
-        $upd->close();
+                // Update sessions
+                $upd = $conn->prepare("UPDATE students SET sessions = ? WHERE id_number = ?");
+                $upd->bind_param("is", $new_sessions, $id_number);
+                $upd->execute();
+                $upd->close();
 
-        // Insert sit-in log
-        $ins = $conn->prepare("INSERT INTO sit_in (id_number, student_name, purpose, lab, remaining_session, sit_in_date, sit_in_time) VALUES (?, ?, ?, ?, ?, ?, ?)");
-        $today = date('Y-m-d');
-        $now   = date('H:i:s');
-        $ins->bind_param("ssssiss", $id_number, $db_name, $purpose, $lab, $new_sessions, $today, $now);
-        $ins->execute();
-        $ins->close();
+                // Insert sit-in log
+                $ins = $conn->prepare("INSERT INTO sit_in (id_number, student_name, purpose, lab, remaining_session, sit_in_date, sit_in_time) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                $today = date('Y-m-d');
+                $now   = date('H:i:s');
+                $ins->bind_param("ssssiss", $id_number, $db_name, $purpose, $lab, $new_sessions, $today, $now);
+                $ins->execute();
+                $ins->close();
 
-        $check->close();
-        $conn->close();
-        header("Location: admin_dashboard.php?sitin=1");
-        exit;
-    }
-}
-            $upd->bind_param("is", $new_sessions, $id_number);
-            $upd->execute();
-            $upd->close();
-
-            // Insert sit-in log
-            $ins = $conn->prepare("INSERT INTO sit_in (id_number, student_name, purpose, lab, remaining_session, sit_in_date, sit_in_time) VALUES (?, ?, ?, ?, ?, ?, ?)");
-            $today = date('Y-m-d');
-            $now   = date('H:i:s');
-            $ins->bind_param("ssssiss", $id_number, $db_name, $purpose, $lab, $new_sessions, $today, $now);
-            $ins->execute();
-            $ins->close();
-
-            $check->close();
-            $conn->close();
-            header("Location: admin_dashboard.php?sitin=1");
-            exit;
+                $check->close();
+                $conn->close();
+                header("Location: admin_dashboard.php?sitin=1");
+                exit;
+            }
         }
     }
     $check->close();
@@ -291,7 +277,7 @@ $conn->close();
             <span class="close-btn" id="closeSitIn">&times;</span>
         </div>
         <div class="modal-body">
-            <?php if(isset($sit_in_error)): ?>
+            <?php if(isset($sit_in_error) && $sit_in_error): ?>
             <div style="padding:10px 14px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);color:#b91c1c;border-radius:8px;font-size:13px;margin-bottom:14px;">
                 <?php echo htmlspecialchars($sit_in_error); ?>
             </div>
@@ -351,7 +337,7 @@ document.getElementById('closeSitIn').onclick  = () => modal.classList.remove('a
 document.getElementById('closeSitIn2').onclick = () => modal.classList.remove('active');
 window.onclick = e => { if(e.target === modal) modal.classList.remove('active'); };
 
-<?php if(isset($sit_in_error)): ?>
+<?php if(isset($sit_in_error) && $sit_in_error): ?>
 modal.classList.add('active');
 <?php endif; ?>
 
