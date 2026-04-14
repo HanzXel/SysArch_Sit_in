@@ -14,10 +14,35 @@ if(isset($_GET['timeout'])){
     $timeout_id = intval($_GET['timeout']);
     $now_time = date('H:i:s');
     $now_date = date('Y-m-d');
-    $s = $conn->prepare("UPDATE sit_in SET time_out = ?, time_out_date = ? WHERE id = ? AND time_out IS NULL");
-    $s->bind_param("ssi", $now_time, $now_date, $timeout_id);
-    $s->execute();
-    $s->close();
+
+    // Get the student's id_number from this sit-in record
+    $fetch = $conn->prepare("SELECT id_number FROM sit_in WHERE id = ? AND time_out IS NULL");
+    $fetch->bind_param("i", $timeout_id);
+    $fetch->execute();
+    $row = $fetch->get_result()->fetch_assoc();
+    $fetch->close();
+
+    if($row) {
+        // Deduct one session from the student
+        $upd = $conn->prepare("UPDATE students SET sessions = GREATEST(sessions - 1, 0) WHERE id_number = ?");
+        $upd->bind_param("s", $row['id_number']);
+        $upd->execute();
+        $upd->close();
+
+        // Get the new session count to update the sit-in log record
+        $ses = $conn->prepare("SELECT sessions FROM students WHERE id_number = ?");
+        $ses->bind_param("s", $row['id_number']);
+        $ses->execute();
+        $new_sessions = $ses->get_result()->fetch_assoc()['sessions'];
+        $ses->close();
+
+        // Record time-out and update remaining_session in the log
+        $s = $conn->prepare("UPDATE sit_in SET time_out = ?, time_out_date = ?, remaining_session = ? WHERE id = ? AND time_out IS NULL");
+        $s->bind_param("ssii", $now_time, $now_date, $new_sessions, $timeout_id);
+        $s->execute();
+        $s->close();
+    }
+
     header("Location: sitin_logs.php?timed_out=1"); exit;
 }
 

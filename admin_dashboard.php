@@ -73,17 +73,12 @@ if($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['id_number'])) {
             } else {
                 $dup_check->close();
 
-                // Update sessions
-                $upd = $conn->prepare("UPDATE students SET sessions = ? WHERE id_number = ?");
-                $upd->bind_param("is", $new_sessions, $id_number);
-                $upd->execute();
-                $upd->close();
-
                 // Insert sit-in log
+                // Insert sit-in log — sessions deducted at time-out, not here
                 $ins = $conn->prepare("INSERT INTO sit_in (id_number, student_name, purpose, lab, remaining_session, sit_in_date, sit_in_time) VALUES (?, ?, ?, ?, ?, ?, ?)");
                 $today = date('Y-m-d');
                 $now   = date('H:i:s');
-                $ins->bind_param("ssssiss", $id_number, $db_name, $purpose, $lab, $new_sessions, $today, $now);
+                $ins->bind_param("ssssiss", $id_number, $db_name, $purpose, $lab, $student_row['sessions'], $today, $now);
                 $ins->execute();
                 $ins->close();
 
@@ -311,10 +306,11 @@ $conn->close();
                     <select name="lab" required>
                         <option value="">Select lab</option>
                         <option value="524">Lab 524</option>
-                        <option value="525">Lab 525</option>
-                        <option value="526">Lab 526</option>
-                        <option value="527">Lab 527</option>
-                        <option value="528">Lab 528</option>
+                        <option value="525">Lab 526</option>
+                        <option value="526">Lab 528</option>
+                        <option value="527">Lab 530</option>
+                        <option value="528">Lab 544</option>
+                        <option value="528">Lab 542</option>
                     </select>
                 </div>
                 <div class="form-group">

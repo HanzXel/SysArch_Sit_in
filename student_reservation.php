@@ -437,10 +437,11 @@ $max_date = date('Y-m-d', strtotime('+30 days'));
                         <select name="lab" class="form-select" required>
                             <option value="">— Select Lab —</option>
                             <option value="524">Lab 524</option>
-                            <option value="525">Lab 525</option>
-                            <option value="526">Lab 526</option>
-                            <option value="527">Lab 527</option>
-                            <option value="528">Lab 528</option>
+                            <option value="525">Lab 526</option>
+                            <option value="526">Lab 528</option>
+                            <option value="527">Lab 530</option>
+                            <option value="528">Lab 544</option>
+                            <option value="529">Lab 542</option>
                         </select>
                     </div>
                     <div class="form-group">
