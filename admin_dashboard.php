@@ -57,11 +57,39 @@ if($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['id_number'])) {
         if($student_row['sessions'] <= 0) {
             $sit_in_error = "Student has no remaining sessions.";
         } else {
-            $new_sessions = $student_row['sessions'] - 1;
-            $db_name      = $student_row['first_name'] . ' ' . $student_row['last_name'];
+    $new_sessions = $student_row['sessions'] - 1;
+    $db_name      = $student_row['first_name'] . ' ' . $student_row['last_name'];
 
-            // Update sessions
-            $upd = $conn->prepare("UPDATE students SET sessions = ? WHERE id_number = ?");
+    // Check for an already active (not timed out) sit-in today
+    $dup_check = $conn->prepare("SELECT id FROM sit_in WHERE id_number = ? AND sit_in_date = CURDATE() AND time_out IS NULL");
+    $dup_check->bind_param("s", $id_number);
+    $dup_check->execute();
+    if($dup_check->get_result()->num_rows > 0){
+        $sit_in_error = "This student already has an active sit-in session today.";
+        $dup_check->close();
+    } else {
+        $dup_check->close();
+
+        // Update sessions
+        $upd = $conn->prepare("UPDATE students SET sessions = ? WHERE id_number = ?");
+        $upd->bind_param("is", $new_sessions, $id_number);
+        $upd->execute();
+        $upd->close();
+
+        // Insert sit-in log
+        $ins = $conn->prepare("INSERT INTO sit_in (id_number, student_name, purpose, lab, remaining_session, sit_in_date, sit_in_time) VALUES (?, ?, ?, ?, ?, ?, ?)");
+        $today = date('Y-m-d');
+        $now   = date('H:i:s');
+        $ins->bind_param("ssssiss", $id_number, $db_name, $purpose, $lab, $new_sessions, $today, $now);
+        $ins->execute();
+        $ins->close();
+
+        $check->close();
+        $conn->close();
+        header("Location: admin_dashboard.php?sitin=1");
+        exit;
+    }
+}
             $upd->bind_param("is", $new_sessions, $id_number);
             $upd->execute();
             $upd->close();
@@ -209,17 +237,17 @@ $conn->close();
                     <span class="action-icon">👤</span>
                     <span class="action-text">+ Sit-in</span>
                 </button>
-                <button class="action-btn">
+                <button class="action-btn" onclick="document.querySelector('.announcement-form textarea').scrollIntoView({behavior:'smooth'}); document.querySelector('.announcement-form textarea').focus();">
                     <span class="action-icon">📢</span>
                     <span class="action-text">Post Announcement</span>
-                </button>
-                <button class="action-btn">
+                 </button>
+                <button class="action-btn" onclick="window.location.href='reports.php'">
                     <span class="action-icon">📋</span>
                     <span class="action-text">View Reports</span>
                 </button>
-                <button class="action-btn">
+                <button class="action-btn" onclick="window.location.href='manage_students.php'">
                     <span class="action-icon">⚙️</span>
-                    <span class="action-text">Manage Labs</span>
+                    <span class="action-text">Manage Students</span>
                 </button>
             </div>
         </div>

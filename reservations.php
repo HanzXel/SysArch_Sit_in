@@ -26,11 +26,58 @@ if($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])){
     $note   = trim($_POST['admin_note'] ?? '');
 
     if(in_array($action, ['approved', 'rejected'])){
-        $s = $conn->prepare("UPDATE reservations SET status = ?, admin_note = ? WHERE id = ?");
-        $s->bind_param("ssi", $action, $note, $res_id);
-        $s->execute();
+    // Update the reservation
+    $s = $conn->prepare("UPDATE reservations SET status = ?, admin_note = ? WHERE id = ?");
+    $s->bind_param("ssi", $action, $note, $res_id);
+    $s->execute();
+    $s->close();
+
+    // Fetch reservation + student details to build notification
+    $r = $conn->prepare("SELECT r.*, s.id as student_db_id
+                         FROM reservations r
+                         JOIN students s ON s.id_number = r.id_number
+                         WHERE r.id = ?");
+    $r->bind_param("i", $res_id);
+    $r->execute();
+    $res_row = $r->get_result()->fetch_assoc();
+    $r->close();
+
+    if($res_row){
+        $student_db_id = $res_row['student_db_id'];
+        $lab           = $res_row['lab'];
+        $res_date      = date('M d, Y', strtotime($res_row['reservation_date']));
+        $res_time      = date('h:i A',  strtotime($res_row['reservation_time']));
+
+        if($action === 'approved'){
+            $notif_title = "Reservation Approved";
+            $notif_msg   = "Your reservation for Lab $lab on $res_date at $res_time has been approved.";
+            if($note) $notif_msg .= " Admin note: $note";
+            $notif_type  = "success";
+        } else {
+            $notif_title = "Reservation Rejected";
+            $notif_msg   = "Your reservation for Lab $lab on $res_date at $res_time was not approved.";
+            if($note) $notif_msg .= " Reason: $note";
+            $notif_type  = "danger";
+        }
+
+        // Auto-create notifications table if missing
+        $conn->query("CREATE TABLE IF NOT EXISTS notifications (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            student_id INT NOT NULL,
+            title VARCHAR(200) NOT NULL,
+            message TEXT NOT NULL,
+            type ENUM('info','success','warning','danger') DEFAULT 'info',
+            is_read TINYINT(1) DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )");
+
+        $n = $conn->prepare("INSERT INTO notifications (student_id, title, message, type) VALUES (?, ?, ?, ?)");
+        $n->bind_param("isss", $student_db_id, $notif_title, $notif_msg, $notif_type);
+        $n->execute();
+        $n->close();
     }
-    header("Location: reservations.php?updated=1"); exit;
+}
+header("Location: reservations.php?updated=1"); exit;
 }
 
 // Handle delete

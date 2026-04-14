@@ -43,8 +43,10 @@ if($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_reservation']))
     $student_name = $_SESSION['first_name'] . ' ' . $_SESSION['last_name'];
 
     // Validate date is not in the past
-    if(strtotime($res_date) < strtotime(date('Y-m-d'))){
-        $error_msg = 'Reservation date cannot be in the past.';
+    $res_hour = (int)date('H', strtotime($res_time));
+    if($res_hour < 7 || $res_hour >= 20){
+        $error_msg = 'Reservation time must be between 7:00 AM and 8:00 PM.';
+}
     } else {
         // Check for duplicate reservation same day + lab
         $dup = $conn->prepare("SELECT id FROM reservations WHERE id_number = ? AND lab = ? AND reservation_date = ? AND status != 'rejected'");
@@ -449,7 +451,9 @@ $max_date = date('Y-m-d', strtotime('+30 days'));
                     </div>
                     <div class="form-group">
                         <label class="form-label">Preferred Time</label>
-                        <input type="time" name="reservation_time" class="form-input" required>
+                        <input type="time" name="reservation_time" class="form-input"
+                                min="07:00" max="20:00" required>
+                        <small style="color:var(--gray-500);font-size:12px;">Lab hours: 7:00 AM – 8:00 PM</small>
                     </div>
                     <div style="background:var(--off-white);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--gray-500);line-height:1.6;">
                         📋 Reservations are subject to admin approval. You will be notified once your request is reviewed.

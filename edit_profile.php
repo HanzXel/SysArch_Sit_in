@@ -145,13 +145,13 @@ if(!isset($_SESSION['student_id'])){
 <nav class="dashboard-navbar">
     <div class="dashboard-left">Dashboard</div>
     <ul class="dashboard-right">
-        <li><a href="#">Notification</a></li>
-        <li><a href="userdb.php">Home</a></li>
-        <li><a href="edit_profile.php">Edit Profile</a></li>
-        <li><a href="#">History</a></li>
-        <li><a href="#">Reservation</a></li>
-        <li><a href="logout.php" class="logout-btn">Log Out</a></li>
-    </ul>
+    <li><a href="notifications.php">Notification</a></li>
+    <li><a href="userdb.php">Home</a></li>
+    <li><a href="edit_profile.php" class="active">Edit Profile</a></li>
+    <li><a href="history.php">History</a></li>
+    <li><a href="student_reservation.php">Reservation</a></li>
+    <li><a href="logout.php" class="logout-btn">Log Out</a></li>
+</ul>
 </nav>
 
 <div class="edit-page-wrapper">
