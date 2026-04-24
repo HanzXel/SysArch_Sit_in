@@ -5,12 +5,26 @@ if(!isset($_SESSION['student_id'])){
 }
 include 'Database/connect.php';
 
+// Auto-create feedback table if it doesn't exist
+$conn->query("CREATE TABLE IF NOT EXISTS sit_in_feedback (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    sit_in_id       INT NOT NULL,
+    student_id      INT NOT NULL,
+    id_number       VARCHAR(50) NOT NULL,
+    student_name    VARCHAR(200) NOT NULL,
+    lab             VARCHAR(50) NOT NULL,
+    rating          TINYINT(1) NOT NULL,
+    feedback_text   TEXT DEFAULT NULL,
+    submitted_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_sitin_feedback (sit_in_id)
+)");
+
 $id_number = $_SESSION['id_number'];
 
 // Filters
-$filter_month = trim($_GET['month'] ?? '');
+$filter_month   = trim($_GET['month'] ?? '');
 $filter_purpose = trim($_GET['purpose'] ?? '');
-$search = trim($_GET['search'] ?? '');
+$search         = trim($_GET['search'] ?? '');
 
 $where  = "WHERE id_number = ?";
 $params = [$id_number];
@@ -40,13 +54,27 @@ $cs = $conn->prepare("SELECT COUNT(*) as c FROM sit_in $where");
 $cs->bind_param($types, ...$params);
 $cs->execute();
 $total = $cs->get_result()->fetch_assoc()['c'];
-$total_pages = ceil($total / $per_page);
+$total_pages = max(1, ceil($total / $per_page));
 
 $all_params = array_merge($params, [$per_page, $offset]);
 $s = $conn->prepare("SELECT * FROM sit_in $where ORDER BY sit_in_date DESC, sit_in_time DESC LIMIT ? OFFSET ?");
 $s->bind_param($types . 'ii', ...$all_params);
 $s->execute();
 $history = $s->get_result()->fetch_all(MYSQLI_ASSOC);
+
+// Collect sit-in IDs that already have feedback
+$sit_in_ids = array_column($history, 'id');
+$feedback_submitted_ids = [];
+if(!empty($sit_in_ids)){
+    $placeholders = implode(',', array_fill(0, count($sit_in_ids), '?'));
+    $types_fb     = str_repeat('i', count($sit_in_ids));
+    $fb = $conn->prepare("SELECT sit_in_id FROM sit_in_feedback WHERE sit_in_id IN ($placeholders)");
+    $fb->bind_param($types_fb, ...$sit_in_ids);
+    $fb->execute();
+    $fb_rows = $fb->get_result()->fetch_all(MYSQLI_ASSOC);
+    $feedback_submitted_ids = array_column($fb_rows, 'sit_in_id');
+    $fb->close();
+}
 
 // Stats for this student
 $total_sessions_used = $conn->prepare("SELECT COUNT(*) as c FROM sit_in WHERE id_number = ?");
@@ -229,6 +257,55 @@ $conn->close();
 .badge-warning { background: rgba(245,158,11,0.1); color: #92400e; border: 1px solid rgba(245,158,11,0.3); }
 .badge-danger  { background: rgba(239,68,68,0.08); color: #b91c1c; border: 1px solid rgba(239,68,68,0.2); }
 
+/* Status: active session (no timeout yet) */
+.badge-active {
+    background: rgba(34,197,94,0.12);
+    color: #15803d;
+    border: 1px solid rgba(34,197,94,0.3);
+}
+
+/* Feedback button */
+.btn-feedback {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 13px;
+    background: rgba(139,92,246,0.1);
+    color: #6d28d9;
+    border: 1px solid rgba(139,92,246,0.25);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-weight: 600;
+    font-family: 'Outfit', sans-serif;
+    cursor: pointer;
+    transition: all var(--transition);
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.btn-feedback:hover {
+    background: rgba(139,92,246,0.2);
+    transform: translateY(-1px);
+}
+
+.btn-feedback-done {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 13px;
+    background: var(--gray-100);
+    color: var(--gray-500);
+    border: 1px solid var(--gray-300);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: default;
+}
+
+/* Star display (read-only) */
+.stars-display { color: #f59e0b; font-size: 14px; letter-spacing: 1px; }
+
 .empty-state { text-align: center; padding: 60px 20px; }
 .empty-icon  { font-size: 44px; margin-bottom: 14px; }
 .empty-title { font-size: 16px; font-weight: 600; color: var(--gray-700); margin-bottom: 6px; }
@@ -341,13 +418,19 @@ $conn->close();
                             <th>#</th>
                             <th>Purpose</th>
                             <th>Laboratory</th>
-                            <th>Sessions Left After</th>
+                            <th>Sessions Left</th>
                             <th>Date</th>
-                            <th>Time</th>
+                            <th>Time In</th>
+                            <th>Time Out</th>
+                            <th>Status</th>
+                            <th>Feedback</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach($history as $i => $h): ?>
+                        <?php foreach($history as $i => $h):
+                            $is_active       = empty($h['time_out']);
+                            $has_feedback    = in_array($h['id'], $feedback_submitted_ids);
+                        ?>
                         <tr>
                             <td><?php echo $offset + $i + 1; ?></td>
                             <td><span class="badge badge-blue"><?php echo htmlspecialchars($h['purpose']); ?></span></td>
@@ -360,6 +443,31 @@ $conn->close();
                             </td>
                             <td><?php echo date('M d, Y', strtotime($h['sit_in_date'])); ?></td>
                             <td><?php echo date('h:i A', strtotime($h['sit_in_time'])); ?></td>
+                            <td>
+                                <?php if(!$is_active): ?>
+                                    <?php echo date('h:i A', strtotime($h['time_out'])); ?>
+                                <?php else: ?>
+                                    <span class="badge badge-active">Active</span>
+                                <?php endif; ?>
+                            </td>
+                            <td>
+                                <?php if($is_active): ?>
+                                    <span class="badge badge-active">🟢 In Progress</span>
+                                <?php else: ?>
+                                    <span class="badge badge-success">✓ Completed</span>
+                                <?php endif; ?>
+                            </td>
+                            <td>
+                                <?php if($is_active): ?>
+                                    <span style="color:var(--gray-300);font-size:12px;">—</span>
+                                <?php elseif($has_feedback): ?>
+                                    <span class="btn-feedback-done">✓ Submitted</span>
+                                <?php else: ?>
+                                    <a href="feedback.php?sit_in_id=<?php echo $h['id']; ?>" class="btn-feedback">
+                                        ⭐ Give Feedback
+                                    </a>
+                                <?php endif; ?>
+                            </td>
                         </tr>
                         <?php endforeach; ?>
                     </tbody>

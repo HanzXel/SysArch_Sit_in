@@ -1,11 +1,10 @@
--- Create database in XAMPP MySQL
--- Run this in phpMyAdmin (http://localhost/phpmyadmin)
-
+-- Create database
 CREATE DATABASE IF NOT EXISTS ccs_sitin;
-
 USE ccs_sitin;
 
--- Create admin table
+-- =========================
+-- ADMINS TABLE
+-- =========================
 CREATE TABLE IF NOT EXISTS admins (
     id INT AUTO_INCREMENT PRIMARY KEY,
     admin_id VARCHAR(50) NOT NULL UNIQUE,
@@ -15,11 +14,15 @@ CREATE TABLE IF NOT EXISTS admins (
     full_name VARCHAR(200) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-//admin@ccs.edu password: password
-INSERT INTO admins (admin_id, username, email, password, full_name) VALUES 
+
+-- Insert admin (safe insert)
+INSERT IGNORE INTO admins (admin_id, username, email, password, full_name) VALUES 
 ('ADM001', 'admin', 'admin@ccs.edu', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'System Administrator');
 
--- Create students table
+
+-- =========================
+-- STUDENTS TABLE
+-- =========================
 CREATE TABLE IF NOT EXISTS students (
     id INT AUTO_INCREMENT PRIMARY KEY,
     id_number VARCHAR(50) NOT NULL UNIQUE,
@@ -36,7 +39,10 @@ CREATE TABLE IF NOT EXISTS students (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create announcements table
+
+-- =========================
+-- ANNOUNCEMENTS TABLE
+-- =========================
 CREATE TABLE IF NOT EXISTS announcements (
     id INT AUTO_INCREMENT PRIMARY KEY,
     admin_name VARCHAR(100) NOT NULL,
@@ -45,12 +51,14 @@ CREATE TABLE IF NOT EXISTS announcements (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Insert sample announcements
-INSERT INTO announcements (admin_name, announcement_date, message) VALUES 
-('CCS Admin', '2026-02-11', 'Important Announcement: We are excited to announce the launch of our new website. Explore our latest products and services now.'),
-('CCS Admin', '2024-05-08', 'Welcome to the CCS Sit-in Monitoring System! Please remember to log your sit-in sessions regularly.');
+INSERT IGNORE INTO announcements (id, admin_name, announcement_date, message) VALUES 
+(1, 'CCS Admin', '2026-02-11', 'Important Announcement: New system launched.'),
+(2, 'CCS Admin', '2024-05-08', 'Welcome to the CCS Sit-in Monitoring System!');
 
--- Create sit_in table
+
+-- =========================
+-- SIT-IN TABLE
+-- =========================
 CREATE TABLE IF NOT EXISTS sit_in (
     id INT AUTO_INCREMENT PRIMARY KEY,
     id_number VARCHAR(50) NOT NULL,
@@ -65,7 +73,10 @@ CREATE TABLE IF NOT EXISTS sit_in (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create reservations table
+
+-- =========================
+-- RESERVATIONS TABLE
+-- =========================
 CREATE TABLE IF NOT EXISTS reservations (
     id INT AUTO_INCREMENT PRIMARY KEY,
     id_number VARCHAR(50) NOT NULL,
@@ -79,7 +90,10 @@ CREATE TABLE IF NOT EXISTS reservations (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create notifications table
+
+-- =========================
+-- NOTIFICATIONS TABLE (FIXED)
+-- =========================
 CREATE TABLE IF NOT EXISTS notifications (
     id INT AUTO_INCREMENT PRIMARY KEY,
     student_id INT NOT NULL,
@@ -87,4 +101,53 @@ CREATE TABLE IF NOT EXISTS notifications (
     message TEXT NOT NULL,
     type ENUM('info','success','warning','danger') DEFAULT 'info',
     is_read TINYINT(1) DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+);
+
+
+-- =========================
+-- FEEDBACK TABLE (ADMIN SIDE)
+-- =========================
+CREATE TABLE IF NOT EXISTS sit_in_feedback (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    sit_in_id INT NOT NULL,
+    student_id INT NOT NULL,
+    id_number VARCHAR(50) NOT NULL,
+    student_name VARCHAR(200) NOT NULL,
+    lab VARCHAR(50) NOT NULL,
+    rating TINYINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    feedback_text TEXT DEFAULT NULL,
+    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    UNIQUE (sit_in_id),
+    FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+    FOREIGN KEY (sit_in_id) REFERENCES sit_in(id) ON DELETE CASCADE
+);
+
+
+-- =========================
+-- OPTIONAL: LAB RULES TABLE
+-- =========================
+CREATE TABLE IF NOT EXISTS lab_rules (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    rule_text TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT IGNORE INTO lab_rules (id, rule_text) VALUES
+(1, 'No food or drinks inside the laboratory.'),
+(2, 'Maintain silence and proper behavior.'),
+(3, 'Log out after using the computer.');
+
+
+-- =========================
+-- OPTIONAL: HISTORY TABLE
+-- =========================
+CREATE TABLE IF NOT EXISTS sit_in_history (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    sit_in_id INT,
+    student_id INT,
+    action VARCHAR(100),
+    action_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

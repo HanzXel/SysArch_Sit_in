@@ -165,6 +165,7 @@ $conn->close();
         <li><a href="sitin_logs.php">Sit-in Logs</a></li>
         <li><a href="reservations.php" class="active">Reservations</a></li>
         <li><a href="reports.php">Reports</a></li>
+        <li><a href="student_feedback.php">Feedback</a></li>
         <li><a href="logout.php" class="logout-btn">Log Out</a></li>
     </ul>
 </nav>

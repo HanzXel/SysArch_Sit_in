@@ -76,6 +76,7 @@ $daily_values_json = json_encode($daily_values);
         <li><a href="sitin_logs.php">Sit-in Logs</a></li>
         <li><a href="reservations.php">Reservations</a></li>
         <li><a href="reports.php" class="active">Reports</a></li>
+        <li><a href="student_feedback.php">Feedback</a></li>
         <li><a href="logout.php" class="logout-btn">Log Out</a></li>
     </ul>
 </nav>
