@@ -25,11 +25,19 @@ $conn->query("CREATE TABLE IF NOT EXISTS admin_sitin_feedback (
     id_number VARCHAR(50) NOT NULL,
     student_name VARCHAR(200) NOT NULL,
     admin_name VARCHAR(100) NOT NULL,
+    lab VARCHAR(50) NOT NULL DEFAULT '',
     rating TINYINT(1) NOT NULL,
     feedback_text TEXT DEFAULT NULL,
     submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_admin_sitin_fb (sit_in_id)
 )");
+// Patch existing admin_sitin_feedback table if lab column is missing
+$conn->query("ALTER TABLE admin_sitin_feedback ADD COLUMN IF NOT EXISTS lab VARCHAR(50) NOT NULL DEFAULT ''");
+// Backfill lab from sit_in for any rows that are missing it
+$conn->query("UPDATE admin_sitin_feedback af
+              JOIN sit_in s ON s.id = af.sit_in_id
+              SET af.lab = s.lab
+              WHERE af.lab = '' OR af.lab IS NULL");
 
 // Active tab: 'from_students' or 'from_admin'
 $tab = ($_GET['tab'] ?? 'from_students') === 'from_admin' ? 'from_admin' : 'from_students';

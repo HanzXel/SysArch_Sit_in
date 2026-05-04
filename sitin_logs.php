@@ -20,7 +20,7 @@ $conn->query("CREATE TABLE IF NOT EXISTS notifications (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )");
 
-// Auto-create admin feedback table
+// Auto-create admin feedback table (with lab column)
 $conn->query("CREATE TABLE IF NOT EXISTS admin_sitin_feedback (
     id           INT AUTO_INCREMENT PRIMARY KEY,
     sit_in_id    INT NOT NULL,
@@ -28,11 +28,15 @@ $conn->query("CREATE TABLE IF NOT EXISTS admin_sitin_feedback (
     id_number    VARCHAR(50) NOT NULL,
     student_name VARCHAR(200) NOT NULL,
     admin_name   VARCHAR(100) NOT NULL,
+    lab          VARCHAR(50) NOT NULL DEFAULT '',
     rating       TINYINT(1) NOT NULL,
     feedback_text TEXT DEFAULT NULL,
     submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_admin_sitin_fb (sit_in_id)
 )");
+// Patch existing table if lab column was missing (safe to run every time)
+$conn->query("ALTER TABLE admin_sitin_feedback ADD COLUMN IF NOT EXISTS lab VARCHAR(50) NOT NULL DEFAULT ''");
+$conn->query("UPDATE admin_sitin_feedback af JOIN sit_in s ON s.id = af.sit_in_id SET af.lab = s.lab WHERE af.lab = '' OR af.lab IS NULL");
 
 // ── Handle Time Out ──────────────────────────────────────────────────
 if(isset($_GET['timeout'])){
@@ -89,16 +93,17 @@ if($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_admin_feedback'
         // Insert admin feedback (ignore duplicate)
         $ins = $conn->prepare(
             "INSERT IGNORE INTO admin_sitin_feedback
-                (sit_in_id, student_id, id_number, student_name, admin_name, rating, feedback_text)
-             VALUES (?, ?, ?, ?, ?, ?, ?)"
+                (sit_in_id, student_id, id_number, student_name, admin_name, lab, rating, feedback_text)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         );
-        // types: i i s s s i s  → "iisssis"
-        $ins->bind_param("iisssis",
+        // types: i i s s s s i s  → "iissssis"
+        $ins->bind_param("iissssis",
             $sit_in_id,
             $student_db_id,
             $id_number,
             $student_name,
             $admin_name,
+            $lab,
             $rating,
             $feedback_txt
         );

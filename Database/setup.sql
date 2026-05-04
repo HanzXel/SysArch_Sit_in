@@ -1,4 +1,6 @@
 -- Create database
+--http://localhost/phpmyadmin/index.php?lang=en_GB
+--http://localhost/SysArch2/login.php
 CREATE DATABASE IF NOT EXISTS ccs_sitin;
 USE ccs_sitin;
 
@@ -16,6 +18,8 @@ CREATE TABLE IF NOT EXISTS admins (
 );
 
 -- Insert admin (safe insert) 
+--admin@ccs.edu
+--password
 INSERT IGNORE INTO admins (admin_id, username, email, password, full_name) VALUES 
 ('ADM001', 'admin', 'admin@ccs.edu', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'System Administrator');
 
