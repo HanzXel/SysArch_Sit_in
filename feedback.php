@@ -52,32 +52,30 @@ if(!$already_submitted && $_SERVER['REQUEST_METHOD'] === 'POST'){
         $error = 'Please select a rating between 1 and 5.';
     } else {
         $student_name = $_SESSION['first_name'] . ' ' . $_SESSION['last_name'];
-        // bind types: i i s s s i s
+
+        // 7 parameters → type string must have exactly 7 chars
+        // sit_in_id=i, student_id=i, id_number=s, student_name=s, lab=s, rating=i, feedback_text=s
+        // → "iisssis"
         $ins = $conn->prepare(
-            "INSERT INTO sit_in_feedback (sit_in_id, student_id, id_number, student_name, lab, rating, feedback_text)
+            "INSERT INTO sit_in_feedback
+                (sit_in_id, student_id, id_number, student_name, lab, rating, feedback_text)
              VALUES (?, ?, ?, ?, ?, ?, ?)"
         );
-        $ins->bind_param("iissis", $sit_in_id, $student_id, $id_number, $student_name, $sitin['lab'], $rating, $feedback_text);
-        // Correct: 7 values → "iissis" has only 6 chars — fix:
-        $ins->close();
-        $ins = $conn->prepare(
-            "INSERT INTO sit_in_feedback (sit_in_id, student_id, id_number, student_name, lab, rating, feedback_text)
-             VALUES (?, ?, ?, ?, ?, ?, ?)"
+        $ins->bind_param("iisssis",
+            $sit_in_id,
+            $student_id,
+            $id_number,
+            $student_name,
+            $sitin['lab'],
+            $rating,
+            $feedback_text
         );
-        $ins->bind_param("iisssis", $sit_in_id, $student_id, $id_number, $student_name, $sitin['lab'], $rating, $feedback_text);
-        // Still wrong: rating is int → "iissiis" — let's be explicit:
-        // sit_in_id=i, student_id=i, id_number=s, student_name=s, lab=s, rating=i, feedback_text=s → "iisssis"
-        $ins->close();
-        $ins = $conn->prepare(
-            "INSERT INTO sit_in_feedback (sit_in_id, student_id, id_number, student_name, lab, rating, feedback_text)
-             VALUES (?, ?, ?, ?, ?, ?, ?)"
-        );
-        $ins->bind_param("iisssis", $sit_in_id, $student_id, $id_number, $student_name, $sitin['lab'], $rating, $feedback_text);
+
         if($ins->execute()){
-            $success          = true;
+            $success           = true;
             $already_submitted = true;
         } else {
-            $error = 'Could not save feedback: ' . $ins->error;
+            $error = 'Could not save feedback. Please try again.';
         }
         $ins->close();
     }
@@ -103,13 +101,17 @@ $conn->close();
 .session-pill{background:var(--off-white);border-radius:var(--radius-sm);padding:14px 18px;margin-bottom:24px;display:flex;flex-wrap:wrap;gap:10px 20px;font-size:13px;color:var(--gray-500);}
 .session-pill strong{color:var(--navy);}
 
-/* ── Stars ── */
+/* ── CSS-only star rating ── */
+/* Inputs are in DOM order 5→1; flex-direction:row-reverse renders them left=1 … right=5 */
 .star-row{display:flex;flex-direction:row-reverse;justify-content:flex-end;gap:6px;margin-bottom:8px;}
 .star-row input[type=radio]{display:none;}
 .star-row label{font-size:40px;color:var(--gray-100);cursor:pointer;transition:color .12s,transform .12s;line-height:1;user-select:none;}
-.star-row label:hover,.star-row label:hover~label,.star-row input:checked~label{color:#f59e0b;}
+/* Hover this star + all siblings after it in DOM (= lower-valued stars, visually to the left) */
+.star-row label:hover,
+.star-row label:hover ~ label,
+.star-row input:checked ~ label{color:#f59e0b;}
 .star-row label:hover{transform:scale(1.18);}
-.star-hint{font-size:12px;color:var(--gray-300);min-height:18px;margin-bottom:16px;}
+.star-hint{font-size:12px;color:var(--gray-300);min-height:18px;margin-bottom:18px;}
 
 .fb-label{display:block;font-size:13px;font-weight:600;color:var(--gray-700);margin-bottom:7px;}
 .fb-textarea{width:100%;padding:12px 14px;border:1.5px solid var(--gray-100);border-radius:var(--radius-sm);font-size:14px;font-family:'Outfit',sans-serif;color:var(--navy);background:#fafbff;resize:vertical;min-height:110px;outline:none;transition:all var(--transition);}
@@ -123,7 +125,6 @@ $conn->close();
 .big-icon{font-size:56px;margin-bottom:14px;}
 .big-title{font-family:'Playfair Display',serif;font-size:22px;font-weight:600;color:var(--navy);margin-bottom:8px;}
 .big-desc{font-size:14px;color:var(--gray-500);line-height:1.65;margin-bottom:22px;}
-
 .btn-back{display:inline-flex;align-items:center;justify-content:center;padding:11px 26px;background:linear-gradient(135deg,var(--blue) 0%,var(--blue-light) 100%);color:var(--white);border-radius:var(--radius-sm);font-size:14px;font-weight:600;font-family:'Outfit',sans-serif;text-decoration:none;transition:all var(--transition);}
 .btn-back:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(30,111,224,.35);}
 
@@ -148,20 +149,18 @@ $conn->close();
 
 <div class="feedback-page">
 <div class="feedback-card">
-
     <div class="fb-header">
         <h2>Session Feedback</h2>
         <p>Help us improve your laboratory experience</p>
     </div>
-
     <div class="fb-body">
 
-        <!-- Session summary -->
         <div class="session-pill">
             <span>🧪 <strong>Lab <?php echo htmlspecialchars($sitin['lab']); ?></strong></span>
             <span>📌 <strong><?php echo htmlspecialchars($sitin['purpose']); ?></strong></span>
             <span>📅 <?php echo date('M d, Y', strtotime($sitin['sit_in_date'])); ?></span>
-            <span>🕐 <?php echo date('h:i A', strtotime($sitin['sit_in_time'])); ?> → <?php echo date('h:i A', strtotime($sitin['time_out'])); ?></span>
+            <span>🕐 <?php echo date('h:i A', strtotime($sitin['sit_in_time'])); ?>
+                  → <?php echo date('h:i A', strtotime($sitin['time_out'])); ?></span>
         </div>
 
         <?php if($success): ?>
@@ -186,10 +185,9 @@ $conn->close();
         <?php endif; ?>
 
         <form method="POST" action="">
-
-            <div style="margin-bottom:6px;">
+            <div style="margin-bottom:4px;">
                 <span class="fb-label">How would you rate this session? <span style="color:#ef4444">*</span></span>
-                <!-- DOM order: 5 4 3 2 1 — flex-direction:row-reverse shows them as 1 2 3 4 5 left→right -->
+                <!-- DOM order 5→1; row-reverse makes it display 1(left)→5(right) -->
                 <div class="star-row">
                     <input type="radio" name="rating" id="s5" value="5" required>
                     <label for="s5" title="Excellent">★</label>
@@ -228,25 +226,20 @@ $conn->close();
 <script>
 const hints = {1:'Very Poor',2:'Poor',3:'Okay',4:'Good',5:'Excellent'};
 const hintEl = document.getElementById('starHint');
-
 document.querySelectorAll('.star-row label').forEach(lbl => {
-    function valOf(l){ const inp = l.previousElementSibling; return inp ? parseInt(inp.value) : 0; }
-    lbl.addEventListener('mouseenter', () => { if(hintEl) hintEl.textContent = hints[valOf(lbl)] || ''; });
+    function val(l){ const i = l.previousElementSibling; return i ? parseInt(i.value) : 0; }
+    lbl.addEventListener('mouseenter', () => { if(hintEl) hintEl.textContent = hints[val(lbl)]||''; });
     lbl.addEventListener('mouseleave', () => {
         const checked = document.querySelector('.star-row input:checked');
-        if(hintEl) hintEl.textContent = checked ? (hints[checked.value] || '') : 'Click a star to rate';
+        if(hintEl) hintEl.textContent = checked ? (hints[checked.value]||'') : 'Click a star to rate';
     });
 });
-
 const ta = document.getElementById('feedback_text');
 const cc = document.getElementById('charCount');
-if(ta && cc){
-    ta.addEventListener('input', () => {
-        cc.textContent = ta.value.length;
-        cc.style.color = ta.value.length > 450 ? '#ef4444' : '';
-    });
-}
+if(ta && cc) ta.addEventListener('input', () => {
+    cc.textContent = ta.value.length;
+    cc.style.color = ta.value.length > 450 ? '#ef4444' : '';
+});
 </script>
-
 </body>
 </html>
