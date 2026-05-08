@@ -194,6 +194,7 @@ $conn->close();
     <ul class="dashboard-right">
         <li><a href="notifications.php">Notification</a></li>
         <li><a href="userdb.php">Home</a></li>
+        <li><a href="software.php">Software</a></li>
         <li><a href="edit_profile.php">Edit Profile</a></li>
         <li><a href="history.php" class="active">History</a></li>
         <li><a href="student_reservation.php">Reservation</a></li>

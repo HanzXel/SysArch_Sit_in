@@ -281,6 +281,8 @@ tbody tr.row-active:hover{background:rgba(34,197,94,.08);}
         <li><a href="admin_dashboard.php">Dashboard</a></li>
         <li><a href="manage_students.php">Manage Students</a></li>
         <li><a href="sitin_logs.php" class="active">Sit-in Logs</a></li>
+        <li><a href="manage_labs.php">Manage Labs</a></li>
+        <li><a href="manage_software.php">Manage Software</a></li>
         <li><a href="reservations.php">Reservations</a></li>
         <li><a href="reports.php">Reports</a></li>
         <li><a href="student_feedback.php">Feedback</a></li>
