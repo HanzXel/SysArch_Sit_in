@@ -1,9 +1,10 @@
 <?php
 session_start();
-if(!isset($_SESSION['student_id'])){
+if (!isset($_SESSION['student_id'])) {
     header("Location: login.php");
     exit;
 }
+require_once 'Database/csrf.php';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -138,6 +139,16 @@ if(!isset($_SESSION['student_id'])){
             transition: color var(--transition);
         }
         .back-link:hover { color: var(--blue); }
+
+        .alert-error {
+            padding: 11px 14px;
+            background: rgba(239,68,68,.08);
+            border: 1px solid rgba(239,68,68,.2);
+            color: #b91c1c;
+            border-radius: var(--radius-sm);
+            font-size: 14px;
+            margin-bottom: 18px;
+        }
     </style>
 </head>
 <body>
@@ -145,61 +156,91 @@ if(!isset($_SESSION['student_id'])){
 <nav class="dashboard-navbar">
     <div class="dashboard-left">Dashboard</div>
     <ul class="dashboard-right">
-    <li><a href="notifications.php">Notification</a></li>
-    <li><a href="userdb.php">Home</a></li>
-    <li><a href="software.php">Software</a></li>
-    <li><a href="edit_profile.php" class="active">Edit Profile</a></li>
-    <li><a href="history.php">History</a></li>
-    <li><a href="student_reservation.php">Reservation</a></li>
-    <li><a href="logout.php" class="logout-btn">Log Out</a></li>
-</ul>
+        <li><a href="notifications.php">Notification</a></li>
+        <li><a href="userdb.php">Home</a></li>
+        <li><a href="software.php">Software</a></li>
+        <li><a href="edit_profile.php" class="active">Edit Profile</a></li>
+        <li><a href="history.php">History</a></li>
+        <li><a href="student_reservation.php">Reservation</a></li>
+        <li><a href="logout.php" class="logout-btn">Log Out</a></li>
+    </ul>
 </nav>
 
 <div class="edit-page-wrapper">
     <div class="edit-card">
         <div class="edit-card-header">Edit Profile</div>
         <div class="edit-card-body">
+
+            <?php
+            $error_messages = [
+                'invalid_email'    => 'Please enter a valid email address.',
+                'file_too_large'   => 'Profile picture must be under 2 MB.',
+                'invalid_file_type'=> 'Only JPG, PNG, GIF, or WEBP images are allowed.',
+                'server'           => 'A server error occurred. Please try again.',
+            ];
+            $err = $error_messages[$_GET['error'] ?? ''] ?? '';
+            if ($err): ?>
+            <div class="alert-error">⚠ <?php echo htmlspecialchars($err); ?></div>
+            <?php endif; ?>
+
             <form action="Database/update_profile.php" method="POST" enctype="multipart/form-data">
+                <?php echo csrf_token(); ?>
 
                 <div class="profile-pic-section">
-                    <img src="profile_pictures/<?php echo $_SESSION['profile_picture'] ?? 'default.png'; ?>"
+                    <img src="profile_pictures/<?php echo htmlspecialchars($_SESSION['profile_picture'] ?? 'default.png'); ?>"
                          alt="Profile Picture"
                          class="profile-pic-preview"
                          id="preview">
                     <label for="profile_picture" class="change-photo-btn">
                         📷 Change Photo
                     </label>
-                    <input type="file" name="profile_picture" id="profile_picture" accept="image/*" style="display:none;" onchange="previewImage(this)">
+                    <input type="file" name="profile_picture" id="profile_picture"
+                           accept="image/jpeg,image/png,image/gif,image/webp"
+                           style="display:none;" onchange="previewImage(this)">
                 </div>
 
                 <label class="edit-label">ID Number</label>
-                <input class="edit-input" type="text" name="id_number" value="<?php echo htmlspecialchars($_SESSION['id_number']); ?>" readonly>
+                <input class="edit-input" type="text"
+                       value="<?php echo htmlspecialchars($_SESSION['id_number']); ?>" readonly>
 
                 <div class="form-row">
                     <div>
                         <label class="edit-label">Last Name</label>
-                        <input class="edit-input" type="text" name="last_name" value="<?php echo htmlspecialchars($_SESSION['last_name']); ?>" required>
+                        <input class="edit-input" type="text" name="last_name"
+                               value="<?php echo htmlspecialchars($_SESSION['last_name']); ?>"
+                               maxlength="100" required>
                     </div>
                     <div>
                         <label class="edit-label">First Name</label>
-                        <input class="edit-input" type="text" name="first_name" value="<?php echo htmlspecialchars($_SESSION['first_name']); ?>" required>
+                        <input class="edit-input" type="text" name="first_name"
+                               value="<?php echo htmlspecialchars($_SESSION['first_name']); ?>"
+                               maxlength="100" required>
                     </div>
                 </div>
 
                 <label class="edit-label">Middle Name</label>
-                <input class="edit-input" type="text" name="middle_name" value="<?php echo htmlspecialchars($_SESSION['middle_name']); ?>">
+                <input class="edit-input" type="text" name="middle_name"
+                       value="<?php echo htmlspecialchars($_SESSION['middle_name'] ?? ''); ?>"
+                       maxlength="100">
 
                 <label class="edit-label">Course</label>
-                <input class="edit-input" type="text" name="course" value="<?php echo htmlspecialchars($_SESSION['course']); ?>" required>
+                <input class="edit-input" type="text" name="course"
+                       value="<?php echo htmlspecialchars($_SESSION['course']); ?>"
+                       maxlength="100" required>
 
                 <label class="edit-label">Year Level</label>
-                <input class="edit-input" type="text" name="year_level" value="<?php echo htmlspecialchars($_SESSION['year_level']); ?>" required>
+                <input class="edit-input" type="text" name="year_level"
+                       value="<?php echo htmlspecialchars($_SESSION['year_level']); ?>"
+                       maxlength="20" required>
 
                 <label class="edit-label">Email Address</label>
-                <input class="edit-input" type="email" name="email" value="<?php echo htmlspecialchars($_SESSION['email']); ?>" required>
+                <input class="edit-input" type="email" name="email"
+                       value="<?php echo htmlspecialchars($_SESSION['email']); ?>"
+                       maxlength="100" required autocomplete="email">
 
                 <label class="edit-label">Address</label>
-                <textarea name="address" class="edit-input" rows="3" required><?php echo htmlspecialchars($_SESSION['address']); ?></textarea>
+                <textarea name="address" class="edit-input" rows="3"
+                          maxlength="500" required><?php echo htmlspecialchars($_SESSION['address'] ?? ''); ?></textarea>
 
                 <button type="submit" class="save-btn">Save Changes</button>
             </form>

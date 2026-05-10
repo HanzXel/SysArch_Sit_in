@@ -1,10 +1,12 @@
 <?php
 session_start();
-if(!isset($_SESSION['is_admin']) || $_SESSION['is_admin'] !== true){
+if (!isset($_SESSION['is_admin']) || $_SESSION['is_admin'] !== true) {
     header("Location: login.php"); exit;
 }
+require_once 'Database/csrf.php';
 include 'Database/connect.php';
 
+// ── Ensure tables ─────────────────────────────────────────────────────
 $conn->query("CREATE TABLE IF NOT EXISTS labs (
     id INT AUTO_INCREMENT PRIMARY KEY,
     lab_name VARCHAR(50) NOT NULL UNIQUE,
@@ -27,79 +29,167 @@ $conn->query("CREATE TABLE IF NOT EXISTS seats (
 )");
 
 // Seed default labs if empty
-if($conn->query("SELECT COUNT(*) as c FROM labs")->fetch_assoc()['c'] == 0){
-    foreach([['524','Laboratory 524',5,8],['526','Laboratory 526',5,8],
-             ['528','Laboratory 528',5,8],['530','Laboratory 530',5,8],
-             ['542','Laboratory 542',5,8],['544','Laboratory 544',5,8]] as $l){
-        $conn->query("INSERT IGNORE INTO labs (lab_name,description,`rows`,`cols`) VALUES ('$l[0]','$l[1]',$l[2],$l[3])");
-        $lid=$conn->insert_id;
-        if($lid){ $sn=1; for($r=1;$r<=$l[2];$r++) for($c=1;$c<=$l[3];$c++){
-            $conn->query("INSERT IGNORE INTO seats (lab_id,seat_number,row_pos,col_pos) VALUES ($lid,$sn,$r,$c)"); $sn++;
-        }}
-    }
-}
-// Auto-seed seats for labs missing them
-foreach($conn->query("SELECT * FROM labs")->fetch_all(MYSQLI_ASSOC) as $lab){
-    if($conn->query("SELECT COUNT(*) as c FROM seats WHERE lab_id={$lab['id']}")->fetch_assoc()['c']==0){
-        $sn=1; for($r=1;$r<=$lab['rows'];$r++) for($c=1;$c<=$lab['cols'];$c++){
-            $conn->query("INSERT IGNORE INTO seats (lab_id,seat_number,row_pos,col_pos) VALUES ({$lab['id']},$sn,$r,$c)"); $sn++;
+if ($conn->query("SELECT COUNT(*) as c FROM labs")->fetch_assoc()['c'] == 0) {
+    foreach ([['524','Laboratory 524',5,8],['526','Laboratory 526',5,8],
+              ['528','Laboratory 528',5,8],['530','Laboratory 530',5,8],
+              ['542','Laboratory 542',5,8],['544','Laboratory 544',5,8]] as $l) {
+        $ins = $conn->prepare("INSERT IGNORE INTO labs (lab_name,description,`rows`,`cols`) VALUES (?,?,?,?)");
+        $ins->bind_param("ssii", $l[0], $l[1], $l[2], $l[3]);
+        $ins->execute();
+        $lid = $conn->insert_id;
+        if ($lid) {
+            $sn = 1;
+            for ($r = 1; $r <= $l[2]; $r++)
+                for ($c = 1; $c <= $l[3]; $c++) {
+                    $si = $conn->prepare("INSERT IGNORE INTO seats (lab_id,seat_number,row_pos,col_pos) VALUES (?,?,?,?)");
+                    $si->bind_param("iiii", $lid, $sn, $r, $c);
+                    $si->execute();
+                    $sn++;
+                }
         }
     }
 }
 
-// Actions
-if(isset($_GET['toggle_seat'])){
-    $conn->query("UPDATE seats SET is_active=1-is_active WHERE id=".intval($_GET['toggle_seat']));
-    header("Location: manage_labs.php?lab=".intval($_GET['lab'])."&toggled=1"); exit;
+// ── AJAX: seat occupancy JSON (used by JS polling — no full-page reload) ──
+if (isset($_GET['ajax_seats'])) {
+    $lab_id = (int) $_GET['ajax_seats'];
+    $lab_row = $conn->query("SELECT lab_name FROM labs WHERE id=$lab_id")->fetch_assoc();
+    if (!$lab_row) { echo json_encode([]); exit; }
+
+    // FIXED: join on seat_id instead of lab name + seat number string match
+    $sr = $conn->prepare("
+        SELECT s.id, s.seat_number, s.row_pos, s.col_pos, s.is_active,
+            si.id            AS sitin_id,
+            si.student_name  AS active_name,
+            si.id_number     AS active_idnum,
+            si.sit_in_time   AS active_since,
+            (SELECT COUNT(*) FROM reservations r
+             WHERE r.seat_id = s.id AND r.reservation_date = CURDATE()
+               AND r.status = 'approved') AS is_reserved
+        FROM seats s
+        LEFT JOIN sit_in si
+            ON si.seat_id = s.id
+            AND si.sit_in_date = CURDATE()
+            AND si.time_out IS NULL
+        WHERE s.lab_id = ?
+        ORDER BY s.row_pos, s.col_pos
+    ");
+    $sr->bind_param("i", $lab_id);
+    $sr->execute();
+    $seats = $sr->get_result()->fetch_all(MYSQLI_ASSOC);
+    $sr->close();
+    header('Content-Type: application/json');
+    echo json_encode($seats);
+    $conn->close();
+    exit;
 }
-if($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['add_lab'])){
-    $ln=trim($_POST['lab_name']); $d=trim($_POST['description']);
-    $r=max(1,min(20,intval($_POST['rows']))); $c=max(1,min(20,intval($_POST['cols'])));
-    $s=$conn->prepare("INSERT INTO labs (lab_name,description,`rows`,`cols`) VALUES (?,?,?,?)");
-    $s->bind_param("ssii",$ln,$d,$r,$c); $s->execute();
-    $lid=$conn->insert_id; $sn=1;
-    for($ri=1;$ri<=$r;$ri++) for($ci=1;$ci<=$c;$ci++){
-        $conn->query("INSERT INTO seats (lab_id,seat_number,row_pos,col_pos) VALUES ($lid,$sn,$ri,$ci)"); $sn++;
+
+// ── Toggle seat ───────────────────────────────────────────────────────
+if (isset($_GET['toggle_seat'])) {
+    csrf_verify();
+    $seat_id = (int) $_GET['toggle_seat'];
+    $lab_id  = (int) $_GET['lab'];
+    $conn->prepare("UPDATE seats SET is_active=1-is_active WHERE id=?")->execute() ?: null;
+    $upd = $conn->prepare("UPDATE seats SET is_active=1-is_active WHERE id=?");
+    $upd->bind_param("i", $seat_id);
+    $upd->execute();
+    header("Location: manage_labs.php?lab=$lab_id&toggled=1"); exit;
+}
+
+// ── Add lab ───────────────────────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_lab'])) {
+    csrf_verify();
+    $ln = mb_substr(trim($_POST['lab_name']), 0, 50);
+    $d  = mb_substr(trim($_POST['description']), 0, 200);
+    $r  = max(1, min(20, (int) $_POST['rows']));
+    $c  = max(1, min(20, (int) $_POST['cols']));
+
+    $s = $conn->prepare("INSERT INTO labs (lab_name,description,`rows`,`cols`) VALUES (?,?,?,?)");
+    $s->bind_param("ssii", $ln, $d, $r, $c);
+    $s->execute();
+    $lid = $conn->insert_id;
+
+    if ($lid) {
+        $sn = 1;
+        for ($ri = 1; $ri <= $r; $ri++)
+            for ($ci = 1; $ci <= $c; $ci++) {
+                $si = $conn->prepare("INSERT INTO seats (lab_id,seat_number,row_pos,col_pos) VALUES (?,?,?,?)");
+                $si->bind_param("iiii", $lid, $sn, $ri, $ci);
+                $si->execute();
+                $sn++;
+            }
     }
     header("Location: manage_labs.php?added=1"); exit;
 }
-if($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['update_lab'])){
-    $lid=intval($_POST['lab_id']); $d=trim($_POST['description']);
-    $r=max(1,min(20,intval($_POST['rows']))); $c=max(1,min(20,intval($_POST['cols'])));
-    $ia=isset($_POST['is_active'])?1:0;
-    $s=$conn->prepare("UPDATE labs SET description=?,`rows`=?,`cols`=?,is_active=? WHERE id=?");
-    $s->bind_param("siiii",$d,$r,$c,$ia,$lid); $s->execute();
-    $conn->query("DELETE FROM seats WHERE lab_id=$lid AND (row_pos>$r OR col_pos>$c)");
-    $mx=$conn->query("SELECT IFNULL(MAX(seat_number),0) as m FROM seats WHERE lab_id=$lid")->fetch_assoc()['m'];
-    $sn=$mx+1;
-    for($ri=1;$ri<=$r;$ri++) for($ci=1;$ci<=$c;$ci++){
-        if(!$conn->query("SELECT id FROM seats WHERE lab_id=$lid AND row_pos=$ri AND col_pos=$ci")->num_rows){
-            $conn->query("INSERT INTO seats (lab_id,seat_number,row_pos,col_pos) VALUES ($lid,$sn,$ri,$ci)"); $sn++;
+
+// ── Update lab ────────────────────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_lab'])) {
+    csrf_verify();
+    $lid = (int) $_POST['lab_id'];
+    $d   = mb_substr(trim($_POST['description']), 0, 200);
+    $r   = max(1, min(20, (int) $_POST['rows']));
+    $c   = max(1, min(20, (int) $_POST['cols']));
+    $ia  = isset($_POST['is_active']) ? 1 : 0;
+
+    $s = $conn->prepare("UPDATE labs SET description=?,`rows`=?,`cols`=?,is_active=? WHERE id=?");
+    $s->bind_param("siiii", $d, $r, $c, $ia, $lid);
+    $s->execute();
+
+    // Remove seats that are now out of bounds
+    $del = $conn->prepare("DELETE FROM seats WHERE lab_id=? AND (row_pos>? OR col_pos>?)");
+    $del->bind_param("iii", $lid, $r, $c);
+    $del->execute();
+
+    // Add any missing seats for new layout
+    $mx = $conn->prepare("SELECT IFNULL(MAX(seat_number),0) as m FROM seats WHERE lab_id=?");
+    $mx->bind_param("i", $lid);
+    $mx->execute();
+    $sn = $mx->get_result()->fetch_assoc()['m'] + 1;
+    for ($ri = 1; $ri <= $r; $ri++)
+        for ($ci = 1; $ci <= $c; $ci++) {
+            $chk = $conn->prepare("SELECT id FROM seats WHERE lab_id=? AND row_pos=? AND col_pos=?");
+            $chk->bind_param("iii", $lid, $ri, $ci);
+            $chk->execute();
+            if ($chk->get_result()->num_rows === 0) {
+                $si = $conn->prepare("INSERT INTO seats (lab_id,seat_number,row_pos,col_pos) VALUES (?,?,?,?)");
+                $si->bind_param("iiii", $lid, $sn, $ri, $ci);
+                $si->execute();
+                $sn++;
+            }
         }
-    }
     header("Location: manage_labs.php?updated=1"); exit;
 }
-if(isset($_GET['delete_lab'])){
-    $d=intval($_GET['delete_lab']);
-    $conn->query("DELETE FROM seats WHERE lab_id=$d");
-    $conn->query("DELETE FROM labs WHERE id=$d");
+
+// ── Delete lab ────────────────────────────────────────────────────────
+if (isset($_GET['delete_lab'])) {
+    csrf_verify();
+    $d = (int) $_GET['delete_lab'];
+    $conn->prepare("DELETE FROM seats WHERE lab_id=?")->bind_param("i",$d) && true;
+    $ds = $conn->prepare("DELETE FROM seats WHERE lab_id=?");
+    $ds->bind_param("i", $d); $ds->execute();
+    $dl = $conn->prepare("DELETE FROM labs WHERE id=?");
+    $dl->bind_param("i", $d); $dl->execute();
     header("Location: manage_labs.php?deleted=1"); exit;
 }
-if(isset($_GET['toggle_lab'])){
-    $conn->query("UPDATE labs SET is_active=1-is_active WHERE id=".intval($_GET['toggle_lab']));
+
+// ── Toggle lab active status ──────────────────────────────────────────
+if (isset($_GET['toggle_lab'])) {
+    csrf_verify();
+    $tl = $conn->prepare("UPDATE labs SET is_active=1-is_active WHERE id=?");
+    $tl->bind_param("i", (int) $_GET['toggle_lab']);
+    $tl->execute();
     header("Location: manage_labs.php?toggled=1"); exit;
 }
 
 $all_labs = $conn->query("SELECT * FROM labs ORDER BY lab_name")->fetch_all(MYSQLI_ASSOC);
-$selected_lab_id = intval($_GET['lab'] ?? ($all_labs[0]['id'] ?? 0));
+$selected_lab_id = (int) ($_GET['lab'] ?? ($all_labs[0]['id'] ?? 0));
 $selected_lab = null;
-foreach($all_labs as $l){ if($l['id']==$selected_lab_id){ $selected_lab=$l; break; } }
+foreach ($all_labs as $l) { if ($l['id'] == $selected_lab_id) { $selected_lab = $l; break; } }
 
-// Fetch seats WITH active sit-in student info
+// Fetch seats using seat_id join (FIXED - no lab name string interpolation)
 $seats = [];
-if($selected_lab){
-    $lab_name_esc = mysqli_real_escape_string($conn, $selected_lab['lab_name']);
-    $sr = $conn->query("
+if ($selected_lab) {
+    $sr = $conn->prepare("
         SELECT s.*,
             si.id            AS sitin_id,
             si.student_name  AS active_name,
@@ -110,21 +200,23 @@ if($selected_lab){
                AND r.status='approved') AS is_reserved
         FROM seats s
         LEFT JOIN sit_in si
-            ON si.lab='$lab_name_esc'
-            AND si.seat_number=s.seat_number
-            AND si.sit_in_date=CURDATE()
+            ON si.seat_id = s.id
+            AND si.sit_in_date = CURDATE()
             AND si.time_out IS NULL
-        WHERE s.lab_id=$selected_lab_id
+        WHERE s.lab_id = ?
         ORDER BY s.row_pos, s.col_pos
     ");
-    $seats = $sr->fetch_all(MYSQLI_ASSOC);
+    $sr->bind_param("i", $selected_lab_id);
+    $sr->execute();
+    $seats = $sr->get_result()->fetch_all(MYSQLI_ASSOC);
+    $sr->close();
 }
 
 $total_labs   = count($all_labs);
-$active_labs  = array_sum(array_column($all_labs,'is_active'));
+$active_labs  = array_sum(array_column($all_labs, 'is_active'));
 $total_seats  = $conn->query("SELECT COUNT(*) as c FROM seats")->fetch_assoc()['c'];
 $active_seats = $conn->query("SELECT COUNT(*) as c FROM seats WHERE is_active=1")->fetch_assoc()['c'];
-$occupied_now = count(array_filter($seats, fn($s)=>!empty($s['sitin_id'])));
+$occupied_now = count(array_filter($seats, fn($s) => !empty($s['sitin_id'])));
 $conn->close();
 ?>
 <!DOCTYPE html>
@@ -152,8 +244,7 @@ $conn->close();
 .seat-body{padding:24px;}
 .seat-legend{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px;font-size:13px;align-items:center;}
 .legend-dot{width:14px;height:14px;border-radius:4px;display:inline-block;margin-right:5px;vertical-align:middle;}
-.legend-available{background:#22c55e;} .legend-occupied{background:#3b82f6;}
-.legend-maintenance{background:#ef4444;} .legend-reserved{background:#f59e0b;}
+.legend-available{background:#22c55e;}.legend-occupied{background:#3b82f6;}.legend-maintenance{background:#ef4444;}.legend-reserved{background:#f59e0b;}
 .seat-rows{display:flex;flex-direction:column;gap:8px;}
 .seat-row{display:flex;gap:8px;align-items:center;}
 .aisle-gap{width:22px;flex-shrink:0;}
@@ -168,14 +259,15 @@ $conn->close();
 @keyframes ocp{0%,100%{transform:scale(1);opacity:1;}50%{transform:scale(1.5);opacity:.4;}}
 .seat-icon{font-size:17px;margin-bottom:1px;}
 .seat-num{font-size:9px;font-weight:800;line-height:1;}
-/* Tooltip */
-.seat-tooltip{display:none;position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);background:var(--navy);color:#fff;font-size:11px;font-weight:500;padding:8px 12px;border-radius:8px;white-space:nowrap;z-index:99;box-shadow:0 4px 16px rgba(10,22,40,.3);line-height:1.6;pointer-events:none;min-width:160px;text-align:left;}
+.seat-tooltip{display:none;position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);background:var(--navy);color:#fff;font-size:11px;padding:8px 12px;border-radius:8px;white-space:nowrap;z-index:99;pointer-events:none;min-width:160px;}
 .seat-tooltip::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:5px solid transparent;border-top-color:var(--navy);}
 .seat-cell:hover .seat-tooltip{display:block;}
-.teacher-desk{background:linear-gradient(135deg,var(--navy),var(--navy-mid));color:#fff;border-radius:10px;padding:8px 28px;font-size:12px;font-weight:700;letter-spacing:.05em;text-align:center;margin:0 auto 18px;display:block;width:fit-content;}
+.teacher-desk{background:linear-gradient(135deg,var(--navy),var(--navy-mid));color:#fff;border-radius:10px;padding:8px 28px;font-size:12px;font-weight:700;text-align:center;margin:0 auto 18px;display:block;width:fit-content;}
 .grid-wrapper{overflow-x:auto;padding-bottom:8px;}
 .seat-stats-bar{margin-top:16px;display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--gray-500);}
 .seat-stats-bar strong{color:var(--navy);}
+.refresh-notice{font-size:12px;color:rgba(255,255,255,.6);display:flex;align-items:center;gap:6px;}
+.refresh-dot{width:7px;height:7px;border-radius:50%;background:#22c55e;animation:ocp 2s ease-in-out infinite;}
 </style>
 </head>
 <body>
@@ -200,129 +292,129 @@ $conn->close();
         <button class="btn btn-primary" onclick="document.getElementById('addLabModal').classList.add('active')">＋ Add Lab</button>
     </div>
 
-    <?php if(isset($_GET['added'])): ?><div class="alert alert-success">✓ Laboratory added.</div><?php endif; ?>
-    <?php if(isset($_GET['updated'])): ?><div class="alert alert-success">✓ Laboratory updated.</div><?php endif; ?>
-    <?php if(isset($_GET['deleted'])): ?><div class="alert alert-danger">✓ Laboratory removed.</div><?php endif; ?>
-    <?php if(isset($_GET['toggled'])): ?><div class="alert alert-success">✓ Status updated.</div><?php endif; ?>
+    <?php if (isset($_GET['added'])):   ?><div class="alert alert-success">✓ Laboratory added.</div><?php endif; ?>
+    <?php if (isset($_GET['updated'])): ?><div class="alert alert-success">✓ Laboratory updated.</div><?php endif; ?>
+    <?php if (isset($_GET['deleted'])): ?><div class="alert alert-danger">✓ Laboratory removed.</div><?php endif; ?>
+    <?php if (isset($_GET['toggled'])): ?><div class="alert alert-success">✓ Status updated.</div><?php endif; ?>
 
     <div class="mini-stats">
-        <div class="mini-stat"><div class="mini-stat-value"><?php echo $total_labs;?></div><div class="mini-stat-label">Total Labs</div></div>
-        <div class="mini-stat"><div class="mini-stat-value"><?php echo $active_labs;?></div><div class="mini-stat-label">Active Labs</div></div>
-        <div class="mini-stat"><div class="mini-stat-value"><?php echo $total_seats;?></div><div class="mini-stat-label">Total Seats</div></div>
-        <div class="mini-stat"><div class="mini-stat-value"><?php echo $active_seats;?></div><div class="mini-stat-label">Active Seats</div></div>
+        <div class="mini-stat"><div class="mini-stat-value"><?php echo $total_labs; ?></div><div class="mini-stat-label">Total Labs</div></div>
+        <div class="mini-stat"><div class="mini-stat-value"><?php echo $active_labs; ?></div><div class="mini-stat-label">Active Labs</div></div>
+        <div class="mini-stat"><div class="mini-stat-value"><?php echo $total_seats; ?></div><div class="mini-stat-label">Total Seats</div></div>
+        <div class="mini-stat"><div class="mini-stat-value"><?php echo $active_seats; ?></div><div class="mini-stat-label">Active Seats</div></div>
     </div>
 
     <div class="lab-grid">
-        <?php foreach($all_labs as $lab): ?>
+        <?php foreach ($all_labs as $lab): ?>
         <div class="lab-card <?php echo $lab['id']==$selected_lab_id?'selected':''; ?> <?php echo !$lab['is_active']?'inactive':''; ?>"
-             onclick="window.location='manage_labs.php?lab=<?php echo $lab['id'];?>'">
+             onclick="window.location='manage_labs.php?lab=<?php echo $lab['id']; ?>'">
             <div style="position:absolute;top:12px;right:12px;">
-                <span class="badge <?php echo $lab['is_active']?'badge-success':'badge-danger';?>" style="font-size:11px;"><?php echo $lab['is_active']?'Active':'Inactive';?></span>
+                <span class="badge <?php echo $lab['is_active']?'badge-success':'badge-danger'; ?>" style="font-size:11px;"><?php echo $lab['is_active']?'Active':'Inactive'; ?></span>
             </div>
-            <div class="lab-card-name">Lab <?php echo htmlspecialchars($lab['lab_name']);?></div>
-            <div class="lab-card-desc"><?php echo htmlspecialchars($lab['description']?:'—');?></div>
+            <div class="lab-card-name">Lab <?php echo htmlspecialchars($lab['lab_name']); ?></div>
+            <div class="lab-card-desc"><?php echo htmlspecialchars($lab['description'] ?: '—'); ?></div>
             <div class="lab-card-meta">
-                <span class="badge badge-blue"><?php echo $lab['rows'];?>×<?php echo $lab['cols'];?></span>
-                <span class="badge badge-gray"><?php echo $lab['rows']*$lab['cols'];?> seats</span>
+                <span class="badge badge-blue"><?php echo $lab['rows']; ?>×<?php echo $lab['cols']; ?></span>
+                <span class="badge badge-gray"><?php echo $lab['rows']*$lab['cols']; ?> seats</span>
             </div>
             <div class="lab-card-actions" onclick="event.stopPropagation()">
-                <button class="btn btn-primary btn-sm" onclick="openEditLab(<?php echo $lab['id'];?>,'<?php echo htmlspecialchars(addslashes($lab['description']));?>',<?php echo $lab['rows'];?>,<?php echo $lab['cols'];?>,<?php echo $lab['is_active'];?>)">Edit</button>
-                <a href="manage_labs.php?toggle_lab=<?php echo $lab['id'];?>" class="btn btn-gray btn-sm"><?php echo $lab['is_active']?'Disable':'Enable';?></a>
-                <a href="manage_labs.php?delete_lab=<?php echo $lab['id'];?>" class="btn btn-danger btn-sm" onclick="return confirm('Delete Lab <?php echo $lab['lab_name'];?>?')">Del</a>
+                <button class="btn btn-primary btn-sm" onclick="openEditLab(<?php echo $lab['id']; ?>,'<?php echo htmlspecialchars(addslashes($lab['description'])); ?>',<?php echo $lab['rows']; ?>,<?php echo $lab['cols']; ?>,<?php echo $lab['is_active']; ?>)">Edit</button>
+                <a href="manage_labs.php?toggle_lab=<?php echo $lab['id']; ?>&<?php echo csrf_token_qs(); ?>" class="btn btn-gray btn-sm"><?php echo $lab['is_active']?'Disable':'Enable'; ?></a>
+                <a href="manage_labs.php?delete_lab=<?php echo $lab['id']; ?>&<?php echo csrf_token_qs(); ?>" class="btn btn-danger btn-sm" onclick="return confirm('Delete Lab <?php echo $lab['lab_name']; ?>?')">Del</a>
             </div>
         </div>
-        <?php endforeach;?>
+        <?php endforeach; ?>
     </div>
 
-    <?php if($selected_lab): ?>
+    <?php if ($selected_lab): ?>
     <div class="seat-section">
         <div class="seat-header">
             <div class="seat-header-left">
-                <span style="font-size:14px;font-weight:600;">Seat Layout — Lab <?php echo htmlspecialchars($selected_lab['lab_name']);?></span>
+                <span style="font-size:14px;font-weight:600;">Seat Layout — Lab <?php echo htmlspecialchars($selected_lab['lab_name']); ?></span>
             </div>
-            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-                <?php if($occupied_now>0):?>
-                <span class="badge badge-blue" style="font-size:12px;padding:5px 12px;">🟢 <?php echo $occupied_now;?> active now</span>
-                <?php endif;?>
-                <span style="font-size:12px;opacity:.7;">Click available/maintenance seat to toggle</span>
+            <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+                <span class="refresh-notice"><span class="refresh-dot"></span> Live — updates every 30s</span>
+                <?php if ($occupied_now > 0): ?>
+                <span class="badge badge-blue" style="font-size:12px;padding:5px 12px;">🟢 <?php echo $occupied_now; ?> active now</span>
+                <?php endif; ?>
             </div>
         </div>
         <div class="seat-body">
             <div class="seat-legend">
                 <span><span class="legend-dot legend-available"></span>Available</span>
-                <span><span class="legend-dot legend-occupied"></span>Occupied — hover to see student</span>
+                <span><span class="legend-dot legend-occupied"></span>Occupied — hover for details</span>
                 <span><span class="legend-dot legend-reserved"></span>Reserved today</span>
                 <span><span class="legend-dot legend-maintenance"></span>Maintenance</span>
             </div>
             <div class="grid-wrapper">
                 <div class="teacher-desk">🖥️ Teacher's Desk / Projector</div>
                 <?php
-                $rows_map=[];
-                foreach($seats as $seat) $rows_map[$seat['row_pos']][$seat['col_pos']]=$seat;
+                $rows_map = [];
+                foreach ($seats as $seat) $rows_map[$seat['row_pos']][$seat['col_pos']] = $seat;
                 ksort($rows_map);
-                $cols_count=(int)$selected_lab['cols'];
-                $half=(int)ceil($cols_count/2);
+                $cols_count = (int) $selected_lab['cols'];
+                $half       = (int) ceil($cols_count / 2);
                 ?>
-                <div class="seat-rows">
-                <?php foreach($rows_map as $rnum=>$row_seats): ksort($row_seats); ?>
+                <div class="seat-rows" id="seatGrid">
+                <?php foreach ($rows_map as $rnum => $row_seats): ksort($row_seats); ?>
                 <div class="seat-row">
-                    <?php for($c=1;$c<=$cols_count;$c++):
-                        if($c===$half+1): ?><div class="aisle-gap"></div><?php endif;
-                        $seat=$row_seats[$c]??null;
-                        if(!$seat): ?><div style="width:58px;height:58px;flex-shrink:0;"></div><?php continue; endif;
-                        $is_occ  = !empty($seat['sitin_id']);
-                        $is_res  = intval($seat['is_reserved'])>0;
-                        $is_maint= intval($seat['is_active'])===0;
-                        if($is_occ)        { $cls='occupied';    $icon='👤'; }
-                        elseif($is_maint)  { $cls='maintenance'; $icon='🔧'; }
-                        elseif($is_res)    { $cls='reserved';    $icon='📅'; }
-                        else               { $cls='available';   $icon='🖥️'; }
+                    <?php for ($c = 1; $c <= $cols_count; $c++):
+                        if ($c === $half + 1): ?><div class="aisle-gap"></div><?php endif;
+                        $seat = $row_seats[$c] ?? null;
+                        if (!$seat): ?><div style="width:58px;height:58px;flex-shrink:0;"></div><?php continue; endif;
+                        $is_occ   = !empty($seat['sitin_id']);
+                        $is_res   = (int) $seat['is_reserved'] > 0;
+                        $is_maint = (int) $seat['is_active'] === 0;
+                        if ($is_occ)       { $cls = 'occupied';     $icon = '👤'; }
+                        elseif ($is_maint) { $cls = 'maintenance';  $icon = '🔧'; }
+                        elseif ($is_res)   { $cls = 'reserved';     $icon = '📅'; }
+                        else               { $cls = 'available';    $icon = '🖥️'; }
                         $can_toggle = !$is_occ && !$is_res;
-                        $toggle_url = "manage_labs.php?toggle_seat={$seat['id']}&lab=$selected_lab_id";
                     ?>
-                    <?php if($can_toggle): ?>
-                    <a href="<?php echo $toggle_url;?>" class="seat-cell <?php echo $cls;?>"
-                       onclick="return confirm('Toggle seat <?php echo $seat['seat_number'];?>?')">
+                    <?php if ($can_toggle): ?>
+                    <a href="manage_labs.php?toggle_seat=<?php echo $seat['id']; ?>&lab=<?php echo $selected_lab_id; ?>&<?php echo csrf_token_qs(); ?>"
+                       class="seat-cell <?php echo $cls; ?>"
+                       onclick="return confirm('Toggle seat <?php echo $seat['seat_number']; ?>?')">
                     <?php else: ?>
-                    <div class="seat-cell <?php echo $cls;?>">
-                    <?php endif;?>
-                        <?php if($is_occ):?><span class="occupied-pulse"></span><?php endif;?>
-                        <span class="seat-icon"><?php echo $icon;?></span>
-                        <span class="seat-num"><?php echo $seat['seat_number'];?></span>
-                        <?php if($is_occ):?>
+                    <div class="seat-cell <?php echo $cls; ?>">
+                    <?php endif; ?>
+                        <?php if ($is_occ): ?><span class="occupied-pulse"></span><?php endif; ?>
+                        <span class="seat-icon"><?php echo $icon; ?></span>
+                        <span class="seat-num"><?php echo $seat['seat_number']; ?></span>
+                        <?php if ($is_occ): ?>
                         <div class="seat-tooltip">
-                            <strong><?php echo htmlspecialchars($seat['active_name']);?></strong><br>
-                            ID: <?php echo htmlspecialchars($seat['active_idnum']);?><br>
-                            Since: <?php echo date('h:i A',strtotime($seat['active_since']));?>
+                            <strong><?php echo htmlspecialchars($seat['active_name']); ?></strong><br>
+                            ID: <?php echo htmlspecialchars($seat['active_idnum']); ?><br>
+                            Since: <?php echo date('h:i A', strtotime($seat['active_since'])); ?>
                         </div>
-                        <?php elseif($is_maint):?>
-                        <div class="seat-tooltip">Seat <?php echo $seat['seat_number'];?><br>Under Maintenance<br>Click to restore</div>
-                        <?php elseif($is_res):?>
-                        <div class="seat-tooltip">Seat <?php echo $seat['seat_number'];?><br>Reserved today</div>
-                        <?php else:?>
-                        <div class="seat-tooltip">Seat <?php echo $seat['seat_number'];?><br>Click to set maintenance</div>
-                        <?php endif;?>
-                    <?php echo $can_toggle?'</a>':'</div>';?>
-                    <?php endfor;?>
+                        <?php elseif ($is_maint): ?>
+                        <div class="seat-tooltip">Seat <?php echo $seat['seat_number']; ?> — Maintenance<br>Click to restore</div>
+                        <?php elseif ($is_res): ?>
+                        <div class="seat-tooltip">Seat <?php echo $seat['seat_number']; ?> — Reserved today</div>
+                        <?php else: ?>
+                        <div class="seat-tooltip">Seat <?php echo $seat['seat_number']; ?> — Click to set maintenance</div>
+                        <?php endif; ?>
+                    <?php echo $can_toggle ? '</a>' : '</div>'; ?>
+                    <?php endfor; ?>
                 </div>
-                <?php endforeach;?>
+                <?php endforeach; ?>
                 </div>
             </div>
-            <div class="seat-stats-bar">
-                <?php
-                $cnt_avail = count(array_filter($seats,fn($s)=>$s['is_active']&&!$s['sitin_id']&&!$s['is_reserved']));
-                $cnt_res   = count(array_filter($seats,fn($s)=>$s['is_reserved']));
-                $cnt_maint = count(array_filter($seats,fn($s)=>!$s['is_active']));
-                ?>
-                <span>Total: <strong><?php echo count($seats);?></strong></span>
-                <span>Available: <strong style="color:#15803d"><?php echo $cnt_avail;?></strong></span>
-                <span>Occupied: <strong style="color:#1d4ed8"><?php echo $occupied_now;?></strong></span>
-                <span>Reserved: <strong style="color:#92400e"><?php echo $cnt_res;?></strong></span>
-                <span>Maintenance: <strong style="color:#b91c1c"><?php echo $cnt_maint;?></strong></span>
+            <?php
+            $cnt_avail = count(array_filter($seats, fn($s) => $s['is_active'] && !$s['sitin_id'] && !$s['is_reserved']));
+            $cnt_res   = count(array_filter($seats, fn($s) => $s['is_reserved']));
+            $cnt_maint = count(array_filter($seats, fn($s) => !$s['is_active']));
+            ?>
+            <div class="seat-stats-bar" id="seatStatsBar">
+                <span>Total: <strong><?php echo count($seats); ?></strong></span>
+                <span>Available: <strong style="color:#15803d"><?php echo $cnt_avail; ?></strong></span>
+                <span>Occupied: <strong style="color:#1d4ed8" id="liveOccupied"><?php echo $occupied_now; ?></strong></span>
+                <span>Reserved: <strong style="color:#92400e"><?php echo $cnt_res; ?></strong></span>
+                <span>Maintenance: <strong style="color:#b91c1c"><?php echo $cnt_maint; ?></strong></span>
             </div>
         </div>
     </div>
-    <?php endif;?>
+    <?php endif; ?>
 </div>
 
 <!-- Add Lab Modal -->
@@ -331,9 +423,10 @@ $conn->close();
         <div class="modal-header"><h2>Add New Laboratory</h2><button class="close-btn" onclick="document.getElementById('addLabModal').classList.remove('active')">&times;</button></div>
         <div class="modal-body">
             <form method="POST">
+                <?php echo csrf_token(); ?>
                 <div class="form-grid">
-                    <div class="form-group full"><label class="form-label">Lab Name <span style="color:#ef4444">*</span></label><input type="text" name="lab_name" class="form-input" placeholder="e.g. 532" required></div>
-                    <div class="form-group full"><label class="form-label">Description</label><input type="text" name="description" class="form-input" placeholder="e.g. Laboratory 532"></div>
+                    <div class="form-group full"><label class="form-label">Lab Name <span style="color:#ef4444">*</span></label><input type="text" name="lab_name" class="form-input" placeholder="e.g. 532" maxlength="50" required></div>
+                    <div class="form-group full"><label class="form-label">Description</label><input type="text" name="description" class="form-input" placeholder="e.g. Laboratory 532" maxlength="200"></div>
                     <div class="form-group"><label class="form-label">Rows</label><input type="number" name="rows" class="form-input" value="5" min="1" max="20"></div>
                     <div class="form-group"><label class="form-label">Columns</label><input type="number" name="cols" class="form-input" value="8" min="1" max="20"></div>
                 </div>
@@ -352,9 +445,10 @@ $conn->close();
         <div class="modal-header"><h2>Edit Laboratory</h2><button class="close-btn" onclick="document.getElementById('editLabModal').classList.remove('active')">&times;</button></div>
         <div class="modal-body">
             <form method="POST">
+                <?php echo csrf_token(); ?>
                 <input type="hidden" name="lab_id" id="edit_lab_id">
                 <div class="form-grid">
-                    <div class="form-group full"><label class="form-label">Description</label><input type="text" name="description" id="edit_lab_desc" class="form-input"></div>
+                    <div class="form-group full"><label class="form-label">Description</label><input type="text" name="description" id="edit_lab_desc" class="form-input" maxlength="200"></div>
                     <div class="form-group"><label class="form-label">Rows</label><input type="number" name="rows" id="edit_lab_rows" class="form-input" min="1" max="20"></div>
                     <div class="form-group"><label class="form-label">Columns</label><input type="number" name="cols" id="edit_lab_cols" class="form-input" min="1" max="20"></div>
                     <div class="form-group full"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;"><input type="checkbox" name="is_active" id="edit_lab_active" style="width:16px;height:16px;"> Lab is Active / Open</label></div>
@@ -369,17 +463,55 @@ $conn->close();
 </div>
 
 <script>
-function openEditLab(id,desc,rows,cols,active){
-    document.getElementById('edit_lab_id').value=id;
-    document.getElementById('edit_lab_desc').value=desc;
-    document.getElementById('edit_lab_rows').value=rows;
-    document.getElementById('edit_lab_cols').value=cols;
-    document.getElementById('edit_lab_active').checked=active==1;
+function openEditLab(id, desc, rows, cols, active) {
+    document.getElementById('edit_lab_id').value      = id;
+    document.getElementById('edit_lab_desc').value    = desc;
+    document.getElementById('edit_lab_rows').value    = rows;
+    document.getElementById('edit_lab_cols').value    = cols;
+    document.getElementById('edit_lab_active').checked = active == 1;
     document.getElementById('editLabModal').classList.add('active');
 }
-window.onclick=e=>{['addLabModal','editLabModal'].forEach(id=>{if(e.target.id===id)document.getElementById(id).classList.remove('active');});};
-// Auto-refresh every 30 seconds to keep student occupancy live
-setTimeout(()=>location.reload(),30000);
+window.onclick = e => {
+    ['addLabModal','editLabModal'].forEach(id => {
+        if (e.target.id === id) document.getElementById(id).classList.remove('active');
+    });
+};
+
+// ── FIXED: AJAX seat refresh — no full-page reload, preserves modal state ──
+<?php if ($selected_lab): ?>
+const SELECTED_LAB_ID = <?php echo $selected_lab_id; ?>;
+
+function refreshSeats() {
+    fetch('manage_labs.php?ajax_seats=' + SELECTED_LAB_ID)
+        .then(r => r.json())
+        .then(seats => {
+            // Update only the occupied count in the stats bar
+            const occ = seats.filter(s => s.sitin_id).length;
+            const el  = document.getElementById('liveOccupied');
+            if (el) el.textContent = occ;
+
+            // Update each seat cell class/tooltip without re-rendering the grid
+            seats.forEach(seat => {
+                const cell = document.querySelector(`[data-seat-id="${seat.id}"]`);
+                if (!cell) return;
+                const isOcc   = !!seat.sitin_id;
+                const isMaint = parseInt(seat.is_active) === 0;
+                const isRes   = parseInt(seat.is_reserved) > 0;
+                let cls = isOcc ? 'occupied' : isMaint ? 'maintenance' : isRes ? 'reserved' : 'available';
+                cell.className = cell.className.replace(/(available|occupied|maintenance|reserved)/g, cls);
+            });
+        })
+        .catch(() => {}); // Silently fail — don't interrupt the admin
+}
+
+// Refresh every 30 seconds WITHOUT touching the page or any modals
+setInterval(refreshSeats, 30000);
+<?php endif; ?>
 </script>
 </body>
 </html>
+<?php
+// Helper: CSRF token as a query-string value (for GET-action links like toggle/delete)
+function csrf_token_qs(): string {
+    return 'csrf_token=' . urlencode($_SESSION['csrf_token']);
+}

@@ -1,11 +1,12 @@
 <?php
 session_start();
-if(!isset($_SESSION['student_id'])){
+if (!isset($_SESSION['student_id'])) {
     header("Location: login.php"); exit;
 }
+require_once 'Database/csrf.php';
 include 'Database/connect.php';
 
-// Ensure all required tables
+// ── Ensure tables ─────────────────────────────────────────────────────
 $conn->query("CREATE TABLE IF NOT EXISTS labs (
     id INT AUTO_INCREMENT PRIMARY KEY,
     lab_name VARCHAR(50) NOT NULL UNIQUE,
@@ -34,7 +35,7 @@ $conn->query("CREATE TABLE IF NOT EXISTS reservations (
     lab VARCHAR(50) NOT NULL,
     reservation_date DATE NOT NULL,
     reservation_time TIME NOT NULL,
-    status ENUM('pending','approved','rejected') DEFAULT 'pending',
+    status ENUM('pending','approved','rejected','expired','converted') DEFAULT 'pending',
     admin_note TEXT DEFAULT NULL,
     seat_id INT DEFAULT NULL,
     seat_number INT DEFAULT NULL,
@@ -47,127 +48,173 @@ $conn->query("CREATE TABLE IF NOT EXISTS notifications (
     message TEXT NOT NULL,
     type ENUM('info','success','warning','danger') DEFAULT 'info',
     is_read TINYINT(1) DEFAULT 0,
+    reference_id INT DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )");
+$conn->query("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS reference_id INT DEFAULT NULL");
 
 // Seed default labs if empty
-$labCount = $conn->query("SELECT COUNT(*) as c FROM labs")->fetch_assoc()['c'];
-if($labCount == 0){
-    foreach([['524',5,8],['526',5,8],['528',5,8],['530',5,8],['542',5,8],['544',5,8]] as $l){
+if ($conn->query("SELECT COUNT(*) as c FROM labs")->fetch_assoc()['c'] == 0) {
+    foreach ([['524',5,8],['526',5,8],['528',5,8],['530',5,8],['542',5,8],['544',5,8]] as $l) {
         $conn->query("INSERT IGNORE INTO labs (lab_name,description,`rows`,`cols`) VALUES ('{$l[0]}','Laboratory {$l[0]}',{$l[1]},{$l[2]})");
         $lid = $conn->insert_id;
-        if($lid){
-            $sn=1; for($r=1;$r<=$l[1];$r++) for($c=1;$c<=$l[2];$c++){
-                $conn->query("INSERT IGNORE INTO seats (lab_id,seat_number,row_pos,col_pos) VALUES ($lid,$sn,$r,$c)");
-                $sn++;
-            }
+        if ($lid) {
+            $sn = 1;
+            for ($r = 1; $r <= $l[1]; $r++)
+                for ($c = 1; $c <= $l[2]; $c++) {
+                    $conn->query("INSERT IGNORE INTO seats (lab_id,seat_number,row_pos,col_pos) VALUES ($lid,$sn,$r,$c)");
+                    $sn++;
+                }
         }
     }
 }
 
-$success_msg = ''; $error_msg = '';
+$success_msg = '';
+$error_msg   = '';
 
 // ── Handle reservation submission ─────────────────────────────────────
-if($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['submit_reservation'])){
-    $purpose  = trim($_POST['purpose']);
-    $lab_name = trim($_POST['lab']);
-    $res_date = trim($_POST['reservation_date']);
-    $res_time = trim($_POST['reservation_time']);
-    $seat_id  = intval($_POST['seat_id'] ?? 0);
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_reservation'])) {
+    csrf_verify();
+
+    $purpose  = mb_substr(trim($_POST['purpose']          ?? ''), 0, 100);
+    $lab_name = mb_substr(trim($_POST['lab']              ?? ''), 0, 50);
+    $res_date = trim($_POST['reservation_date']           ?? '');
+    $res_time = trim($_POST['reservation_time']           ?? '');
+    $seat_id  = (int) ($_POST['seat_id']                 ?? 0);
     $id_number    = $_SESSION['id_number'];
-    $student_name = $_SESSION['first_name'].' '.$_SESSION['last_name'];
+    $student_name = $_SESSION['first_name'] . ' ' . $_SESSION['last_name'];
 
-    $res_hour = (int)date('H', strtotime($res_time));
-    if($res_hour < 7 || $res_hour >= 20){
-        $error_msg = 'Reservation time must be between 7:00 AM and 8:00 PM.';
-    } elseif(!$seat_id){
-        $error_msg = 'Please select a seat from the layout below.';
+    // Validate date format and range
+    $min_date = date('Y-m-d');
+    $max_date = date('Y-m-d', strtotime('+30 days'));
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $res_date) || $res_date < $min_date || $res_date > $max_date) {
+        $error_msg = 'Please choose a valid reservation date (today up to 30 days ahead).';
+    } elseif (!preg_match('/^\d{2}:\d{2}$/', $res_time)) {
+        $error_msg = 'Invalid time format.';
     } else {
-        // Check duplicate
-        $dup = $conn->prepare("SELECT id FROM reservations WHERE id_number=? AND lab=? AND reservation_date=? AND status!='rejected'");
-        $dup->bind_param("sss",$id_number,$lab_name,$res_date);
-        $dup->execute();
-        if($dup->get_result()->num_rows > 0){
-            $error_msg = 'You already have a reservation for this lab on that date.';
+        $res_hour = (int) date('H', strtotime($res_time));
+        if ($res_hour < 7 || $res_hour >= 20) {
+            $error_msg = 'Reservation time must be between 7:00 AM and 8:00 PM.';
+        } elseif (!$seat_id) {
+            $error_msg = 'Please select a seat from the layout below.';
         } else {
-            // Check seat not already taken
-            $seat_dup = $conn->prepare("SELECT id FROM reservations WHERE seat_id=? AND reservation_date=? AND status!='rejected'");
-            $seat_dup->bind_param("is",$seat_id,$res_date);
-            $seat_dup->execute();
-            if($seat_dup->get_result()->num_rows > 0){
-                $error_msg = 'That seat is already reserved on this date. Please choose another.';
+            // Check duplicate reservation for this student on this date+lab
+            $dup = $conn->prepare("SELECT id FROM reservations WHERE id_number=? AND lab=? AND reservation_date=? AND status NOT IN ('rejected','expired','converted')");
+            $dup->bind_param("sss", $id_number, $lab_name, $res_date);
+            $dup->execute();
+            if ($dup->get_result()->num_rows > 0) {
+                $error_msg = 'You already have a reservation for this lab on that date.';
             } else {
-                // Get seat number
-                $srow = $conn->query("SELECT seat_number FROM seats WHERE id=$seat_id")->fetch_assoc();
-                $seat_num = $srow ? $srow['seat_number'] : 0;
-
-                $ins = $conn->prepare("INSERT INTO reservations (id_number,student_name,purpose,lab,reservation_date,reservation_time,seat_id,seat_number) VALUES (?,?,?,?,?,?,?,?)");
-                $ins->bind_param("ssssssii",$id_number,$student_name,$purpose,$lab_name,$res_date,$res_time,$seat_id,$seat_num);
-                if($ins->execute()){
-                    $notif_msg = "Your reservation for Lab $lab_name (Seat $seat_num) on ".date('M d, Y',strtotime($res_date))." at ".date('h:i A',strtotime($res_time))." has been submitted.";
-                    $notif = $conn->prepare("INSERT INTO notifications (student_id,title,message,type) VALUES (?,'Reservation Submitted',?,'info')");
-                    $notif->bind_param("is",$_SESSION['student_id'],$notif_msg);
-                    $notif->execute();
-                    $success_msg = 'Reservation submitted! Seat '.$seat_num.' reserved. Awaiting admin approval.';
+                // Check seat not taken on the SELECTED date (not just today)
+                $seat_dup = $conn->prepare("SELECT id FROM reservations WHERE seat_id=? AND reservation_date=? AND status NOT IN ('rejected','expired','converted')");
+                $seat_dup->bind_param("is", $seat_id, $res_date);
+                $seat_dup->execute();
+                if ($seat_dup->get_result()->num_rows > 0) {
+                    $error_msg = 'That seat is already reserved on this date. Please choose another.';
                 } else {
-                    $error_msg = 'Something went wrong. Please try again.';
+                    $srow = $conn->prepare("SELECT seat_number FROM seats WHERE id=?");
+                    $srow->bind_param("i", $seat_id);
+                    $srow->execute();
+                    $sdata    = $srow->get_result()->fetch_assoc();
+                    $seat_num = $sdata ? $sdata['seat_number'] : 0;
+                    $srow->close();
+
+                    $ins = $conn->prepare("INSERT INTO reservations (id_number,student_name,purpose,lab,reservation_date,reservation_time,seat_id,seat_number) VALUES (?,?,?,?,?,?,?,?)");
+                    $ins->bind_param("ssssssii", $id_number, $student_name, $purpose, $lab_name, $res_date, $res_time, $seat_id, $seat_num);
+                    if ($ins->execute()) {
+                        $res_id = $conn->insert_id;
+                        $notif_msg = "Your reservation for Lab $lab_name (Seat $seat_num) on " . date('M d, Y', strtotime($res_date)) . " at " . date('h:i A', strtotime($res_time)) . " has been submitted and is awaiting admin approval.";
+                        $sid = $_SESSION['student_id'];
+                        $notif = $conn->prepare("INSERT INTO notifications (student_id,title,message,type,reference_id) VALUES (?,'Reservation Submitted',?,'info',?)");
+                        $notif->bind_param("isi", $sid, $notif_msg, $res_id);
+                        $notif->execute();
+                        $notif->close();
+                        $success_msg = "Reservation submitted! Seat $seat_num reserved for " . date('M d, Y', strtotime($res_date)) . ". Awaiting admin approval.";
+                    } else {
+                        $error_msg = 'Something went wrong. Please try again.';
+                    }
+                    $ins->close();
                 }
+                $seat_dup->close();
             }
+            $dup->close();
         }
     }
 }
 
 // Handle cancel
-if(isset($_GET['cancel'])){
-    $cid = intval($_GET['cancel']);
-    $s = $conn->prepare("DELETE FROM reservations WHERE id=? AND id_number=? AND status='pending'");
-    $s->bind_param("is",$cid,$_SESSION['id_number']);
+if (isset($_GET['cancel'])) {
+    $cid = (int) $_GET['cancel'];
+    $s   = $conn->prepare("DELETE FROM reservations WHERE id=? AND id_number=? AND status='pending'");
+    $s->bind_param("is", $cid, $_SESSION['id_number']);
     $s->execute();
     header("Location: student_reservation.php?cancelled=1"); exit;
+}
+
+// ── AJAX: seats for a given lab + date ───────────────────────────────
+// FIXED: seat availability is checked against the requested date, not CURDATE()
+if (isset($_GET['ajax_seats'])) {
+    $lab_id   = (int) $_GET['ajax_seats'];
+    $req_date = trim($_GET['date'] ?? '');
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $req_date)) {
+        $req_date = date('Y-m-d');
+    }
+
+    $sr = $conn->prepare("
+        SELECT s.*,
+            (SELECT COUNT(*) FROM reservations r
+             WHERE r.seat_id = s.id
+               AND r.reservation_date = ?
+               AND r.status NOT IN ('rejected','expired','converted')) AS is_taken
+        FROM seats s
+        WHERE s.lab_id = ?
+        ORDER BY s.row_pos, s.col_pos
+    ");
+    $sr->bind_param("si", $req_date, $lab_id);
+    $sr->execute();
+    $seats = $sr->get_result()->fetch_all(MYSQLI_ASSOC);
+    $sr->close();
+    header('Content-Type: application/json');
+    echo json_encode($seats);
+    $conn->close();
+    exit;
 }
 
 // Fetch labs
 $labs = $conn->query("SELECT * FROM labs WHERE is_active=1 ORDER BY lab_name")->fetch_all(MYSQLI_ASSOC);
 
-// Build seats JSON per lab
-// Include ALL seats (active AND inactive) so inactive ones show as unavailable to students
-$labs_seats_json = [];
-foreach($labs as $lab){
-    $sr = $conn->prepare("SELECT s.*,
-        (SELECT COUNT(*) FROM reservations r WHERE r.seat_id=s.id AND r.reservation_date=CURDATE() AND r.status!='rejected') as is_taken
-        FROM seats s WHERE s.lab_id=? ORDER BY s.row_pos, s.col_pos");
-    $sr->bind_param("i",$lab['id']);
-    $sr->execute();
-    $sdata = $sr->get_result()->fetch_all(MYSQLI_ASSOC);
-    $labs_seats_json[$lab['lab_name']] = [
+// Build lab info (rows/cols) for JS seat renderer
+$labs_info = [];
+foreach ($labs as $lab) {
+    $labs_info[$lab['lab_name']] = [
         'id'   => $lab['id'],
-        'rows' => $lab['rows'],
-        'cols' => $lab['cols'],
-        'seats'=> $sdata
+        'rows' => (int) $lab['rows'],
+        'cols' => (int) $lab['cols'],
     ];
 }
 
 // Fetch student's reservations
 $filter_status = trim($_GET['status'] ?? '');
-$where = "WHERE id_number=?"; $params=[$_SESSION['id_number']];
-if(in_array($filter_status,['pending','approved','rejected'])){
-    $where.=" AND status=?"; $params[]=$filter_status;
+$where  = "WHERE id_number=?";
+$params = [$_SESSION['id_number']];
+if (in_array($filter_status, ['pending','approved','rejected','expired','converted'])) {
+    $where .= " AND status=?";
+    $params[] = $filter_status;
 }
-$s = $conn->prepare("SELECT * FROM reservations $where ORDER BY reservation_date DESC,reservation_time DESC");
-$s->bind_param(str_repeat('s',count($params)),...$params);
+$s = $conn->prepare("SELECT * FROM reservations $where ORDER BY reservation_date DESC, reservation_time DESC");
+$s->bind_param(str_repeat('s', count($params)), ...$params);
 $s->execute();
 $reservations = $s->get_result()->fetch_all(MYSQLI_ASSOC);
 
-$pending_c=0;$approved_c=0;$rejected_c=0;
-foreach($reservations as $r){
-    if($r['status']==='pending') $pending_c++;
-    if($r['status']==='approved') $approved_c++;
-    if($r['status']==='rejected') $rejected_c++;
+$pending_c  = 0; $approved_c = 0; $rejected_c = 0;
+foreach ($reservations as $r) {
+    if ($r['status'] === 'pending')  $pending_c++;
+    if ($r['status'] === 'approved') $approved_c++;
+    if ($r['status'] === 'rejected') $rejected_c++;
 }
 
-$min_date=date('Y-m-d');
-$max_date=date('Y-m-d',strtotime('+30 days'));
-
+$min_date = date('Y-m-d');
+$max_date = date('Y-m-d', strtotime('+30 days'));
 $conn->close();
 ?>
 <!DOCTYPE html>
@@ -184,47 +231,36 @@ $conn->close();
 .page-subtitle{font-size:14px;color:var(--gray-500);margin-top:3px;margin-bottom:24px;}
 .res-layout{display:grid;grid-template-columns:340px 1fr;gap:22px;align-items:start;}
 @media(max-width:960px){.res-layout{grid-template-columns:1fr;}}
-
 .form-card{background:var(--white);border-radius:var(--radius);box-shadow:var(--card-shadow);overflow:hidden;position:sticky;top:88px;}
-.form-card-header,.list-card-header{background:linear-gradient(135deg,var(--navy),var(--navy-mid));color:var(--white);padding:16px 24px;font-size:14px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;display:flex;align-items:center;gap:10px;}
-.form-card-header::before,.list-card-header-left::before{content:'';width:4px;height:16px;background:var(--blue-light);border-radius:2px;}
+.form-card-header{background:linear-gradient(135deg,var(--navy),var(--navy-mid));color:var(--white);padding:16px 24px;font-size:14px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;}
 .form-card-body{padding:22px;}
-
 .form-group{margin-bottom:14px;}
 .form-label{display:block;font-size:13px;font-weight:600;color:var(--gray-700);margin-bottom:6px;}
 .form-input,.form-select{width:100%;padding:10px 14px;border:1.5px solid var(--gray-100);border-radius:var(--radius-sm);font-size:14px;font-family:'Outfit',sans-serif;color:var(--navy);background:#fafbff;outline:none;transition:all var(--transition);}
 .form-input:focus,.form-select:focus{border-color:var(--blue);background:var(--white);box-shadow:0 0 0 3px rgba(30,111,224,.1);}
 .submit-btn{width:100%;padding:12px;background:linear-gradient(135deg,var(--blue),var(--blue-light));color:var(--white);border:none;border-radius:var(--radius-sm);font-size:15px;font-weight:600;font-family:'Outfit',sans-serif;cursor:pointer;transition:all var(--transition);margin-top:4px;}
 .submit-btn:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(30,111,224,.35);}
-
-/* ── Seat picker ── */
 .seat-picker{background:var(--off-white);border-radius:var(--radius-sm);padding:16px;margin-top:14px;border:1.5px solid var(--gray-100);}
 .seat-picker-title{font-size:13px;font-weight:600;color:var(--gray-700);margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;}
 .seat-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;margin-bottom:12px;}
 .leg-dot{width:12px;height:12px;border-radius:3px;display:inline-block;margin-right:4px;vertical-align:middle;}
-.leg-green{background:#22c55e;}
-.leg-red{background:#ef4444;}
-.leg-amber{background:#f59e0b;}
-.leg-blue{background:var(--blue);}
-
+.leg-green{background:#22c55e;}.leg-red{background:#ef4444;}.leg-amber{background:#f59e0b;}.leg-blue{background:var(--blue);}
 .seat-grid-wrapper{overflow-x:auto;}
-.seat-grid{display:inline-grid;gap:5px;}
-.seat-btn{width:42px;height:42px;border-radius:8px;border:2px solid transparent;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:9px;font-weight:800;cursor:pointer;transition:all var(--transition);font-family:'Outfit',sans-serif;}
+.seat-grid{display:flex;flex-direction:column;gap:5px;}
+.seat-row-wrap{display:flex;gap:4px;align-items:center;}
+.aisle-gap{width:14px;flex-shrink:0;}
+.seat-btn{width:42px;height:42px;border-radius:8px;border:2px solid transparent;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:9px;font-weight:800;cursor:pointer;transition:all var(--transition);font-family:'Outfit',sans-serif;flex-shrink:0;}
 .seat-btn.available{background:rgba(34,197,94,.18);color:#15803d;border-color:rgba(34,197,94,.4);}
 .seat-btn.available:hover{background:rgba(34,197,94,.35);transform:scale(1.1);}
 .seat-btn.taken{background:rgba(239,68,68,.12);color:#b91c1c;border-color:rgba(239,68,68,.35);cursor:not-allowed;}
 .seat-btn.selected{background:var(--blue);color:var(--white);border-color:var(--blue);transform:scale(1.1);}
 .seat-icon{font-size:14px;margin-bottom:1px;}
 .teacher-bar{background:linear-gradient(135deg,var(--navy),var(--navy-mid));color:var(--white);border-radius:8px;padding:6px 18px;font-size:11px;font-weight:700;text-align:center;margin:0 auto 12px;display:block;width:fit-content;}
-.aisle-gap{width:14px;}
-
 .selected-seat-badge{background:rgba(30,111,224,.1);border:1px solid rgba(30,111,224,.25);color:var(--blue);border-radius:var(--radius-sm);padding:8px 14px;font-size:13px;font-weight:600;margin-top:10px;display:none;align-items:center;gap:8px;}
 .selected-seat-badge.show{display:flex;}
-
-/* Reservations list */
+.loading-seats{text-align:center;padding:16px;color:var(--gray-300);font-size:13px;}
 .list-card{background:var(--white);border-radius:var(--radius);box-shadow:var(--card-shadow);overflow:hidden;}
-.list-card-header{justify-content:space-between;}
-.list-card-header-left{display:flex;align-items:center;gap:10px;}
+.list-card-header{background:linear-gradient(135deg,var(--navy),var(--navy-mid));color:var(--white);padding:16px 24px;font-size:14px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;display:flex;justify-content:space-between;align-items:center;}
 .list-card-body{padding:20px;}
 .status-tabs{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap;}
 .status-tab{padding:7px 14px;border-radius:100px;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;border:1.5px solid var(--gray-100);background:var(--white);color:var(--gray-500);transition:all var(--transition);}
@@ -275,9 +311,9 @@ $conn->close();
     <div class="page-title">Laboratory Reservation</div>
     <div class="page-subtitle">Book a computer laboratory slot and choose your seat</div>
 
-    <?php if($success_msg): ?><div class="alert alert-success">✓ <?php echo $success_msg; ?></div><?php endif; ?>
-    <?php if($error_msg): ?><div class="alert alert-danger">⚠ <?php echo $error_msg; ?></div><?php endif; ?>
-    <?php if(isset($_GET['cancelled'])): ?><div class="alert alert-success">✓ Reservation cancelled.</div><?php endif; ?>
+    <?php if ($success_msg): ?><div class="alert alert-success">✓ <?php echo htmlspecialchars($success_msg); ?></div><?php endif; ?>
+    <?php if ($error_msg):   ?><div class="alert alert-danger">⚠ <?php echo htmlspecialchars($error_msg); ?></div><?php endif; ?>
+    <?php if (isset($_GET['cancelled'])): ?><div class="alert alert-success">✓ Reservation cancelled.</div><?php endif; ?>
 
     <div class="res-layout">
 
@@ -286,6 +322,7 @@ $conn->close();
             <div class="form-card-header">New Reservation</div>
             <div class="form-card-body">
                 <form method="POST" id="resForm">
+                    <?php echo csrf_token(); ?>
                     <input type="hidden" name="seat_id" id="selectedSeatId" value="0">
 
                     <div class="form-group">
@@ -301,9 +338,9 @@ $conn->close();
 
                     <div class="form-group">
                         <label class="form-label">Laboratory</label>
-                        <select name="lab" class="form-select" id="labSelect" required onchange="loadSeats(this.value)">
+                        <select name="lab" class="form-select" id="labSelect" required onchange="onLabOrDateChange()">
                             <option value="">— Select Lab —</option>
-                            <?php foreach($labs as $lab): ?>
+                            <?php foreach ($labs as $lab): ?>
                             <option value="<?php echo htmlspecialchars($lab['lab_name']); ?>">Lab <?php echo htmlspecialchars($lab['lab_name']); ?></option>
                             <?php endforeach; ?>
                         </select>
@@ -311,8 +348,11 @@ $conn->close();
 
                     <div class="form-group">
                         <label class="form-label">Preferred Date</label>
+                        <!-- FIXED: onchange triggers seat reload for selected date -->
                         <input type="date" name="reservation_date" class="form-input" id="resDate"
-                               min="<?php echo $min_date; ?>" max="<?php echo $max_date; ?>" required onchange="refreshSeats()">
+                               min="<?php echo $min_date; ?>" max="<?php echo $max_date; ?>"
+                               value="<?php echo $min_date; ?>"
+                               required onchange="onLabOrDateChange()">
                     </div>
 
                     <div class="form-group">
@@ -321,7 +361,7 @@ $conn->close();
                         <small style="color:var(--gray-500);font-size:12px;">Lab hours: 7:00 AM – 8:00 PM</small>
                     </div>
 
-                    <!-- Seat Picker -->
+                    <!-- Seat Picker — FIXED: loads seats for the chosen date via AJAX -->
                     <div class="seat-picker" id="seatPicker" style="display:none;">
                         <div class="seat-picker-title">
                             <span>🖥️ Select Your Seat</span>
@@ -342,7 +382,7 @@ $conn->close();
                         </div>
                     </div>
 
-                    <div style="background:var(--off-white);border-radius:var(--radius-sm);padding:11px 13px;margin:14px 0 14px;font-size:13px;color:var(--gray-500);line-height:1.6;">
+                    <div style="background:var(--off-white);border-radius:var(--radius-sm);padding:11px 13px;margin:14px 0;font-size:13px;color:var(--gray-500);line-height:1.6;">
                         📋 Reservations require admin approval. You will be notified once reviewed.
                     </div>
 
@@ -354,18 +394,18 @@ $conn->close();
         <!-- My Reservations -->
         <div class="list-card">
             <div class="list-card-header">
-                <div class="list-card-header-left">My Reservations</div>
+                <span>My Reservations</span>
                 <span style="font-size:13px;opacity:.7"><?php echo count($reservations); ?> total</span>
             </div>
             <div class="list-card-body">
                 <div class="status-tabs">
                     <a href="student_reservation.php" class="status-tab <?php echo $filter_status===''?'active':''; ?>">All (<?php echo count($reservations); ?>)</a>
-                    <a href="student_reservation.php?status=pending" class="status-tab <?php echo $filter_status==='pending'?'active':''; ?>">Pending (<?php echo $pending_c; ?>)</a>
+                    <a href="student_reservation.php?status=pending"  class="status-tab <?php echo $filter_status==='pending' ?'active':''; ?>">Pending (<?php echo $pending_c; ?>)</a>
                     <a href="student_reservation.php?status=approved" class="status-tab <?php echo $filter_status==='approved'?'active':''; ?>">Approved (<?php echo $approved_c; ?>)</a>
                     <a href="student_reservation.php?status=rejected" class="status-tab <?php echo $filter_status==='rejected'?'active':''; ?>">Rejected (<?php echo $rejected_c; ?>)</a>
                 </div>
 
-                <?php if(empty($reservations)): ?>
+                <?php if (empty($reservations)): ?>
                 <div class="empty-state">
                     <div class="empty-icon">📅</div>
                     <div class="empty-title">No reservations yet</div>
@@ -373,28 +413,31 @@ $conn->close();
                 </div>
                 <?php else: ?>
                 <div class="res-list">
-                    <?php $sbadge=['pending'=>'badge-warning','approved'=>'badge-success','rejected'=>'badge-danger'];
-                    $sicon=['pending'=>'⏳','approved'=>'✓','rejected'=>'✕'];
-                    foreach($reservations as $idx=>$r): ?>
-                    <div class="res-item status-<?php echo $r['status']; ?>" style="animation-delay:<?php echo $idx*.04;?>s">
+                    <?php
+                    $sbadge = ['pending'=>'badge-warning','approved'=>'badge-success','rejected'=>'badge-danger','expired'=>'badge-danger','converted'=>'badge-success'];
+                    $sicon  = ['pending'=>'⏳','approved'=>'✓','rejected'=>'✕','expired'=>'⌛','converted'=>'🟢'];
+                    foreach ($reservations as $r):
+                    ?>
+                    <div class="res-item status-<?php echo $r['status']; ?>">
                         <div style="flex:1;min-width:0;">
                             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px;">
                                 <span class="res-lab">Lab <?php echo htmlspecialchars($r['lab']); ?></span>
-                                <?php if($r['seat_number']): ?><span class="badge badge-blue">Seat <?php echo $r['seat_number']; ?></span><?php endif; ?>
+                                <?php if ($r['seat_number']): ?><span class="badge badge-blue">Seat <?php echo $r['seat_number']; ?></span><?php endif; ?>
                                 <span class="badge badge-blue"><?php echo htmlspecialchars($r['purpose']); ?></span>
-                                <span class="badge <?php echo $sbadge[$r['status']]; ?>"><?php echo $sicon[$r['status']].' '.ucfirst($r['status']); ?></span>
+                                <span class="badge <?php echo $sbadge[$r['status']] ?? 'badge-blue'; ?>"><?php echo ($sicon[$r['status']] ?? '') . ' ' . ucfirst($r['status']); ?></span>
                             </div>
                             <div class="res-meta">
-                                <span>📅 <?php echo date('M d, Y',strtotime($r['reservation_date'])); ?></span>
-                                <span>🕐 <?php echo date('h:i A',strtotime($r['reservation_time'])); ?></span>
-                                <span>Submitted <?php echo date('M d',strtotime($r['created_at'])); ?></span>
+                                <span>📅 <?php echo date('M d, Y', strtotime($r['reservation_date'])); ?></span>
+                                <span>🕐 <?php echo date('h:i A', strtotime($r['reservation_time'])); ?></span>
+                                <span>Submitted <?php echo date('M d', strtotime($r['created_at'])); ?></span>
                             </div>
-                            <?php if($r['admin_note']): ?>
+                            <?php if ($r['admin_note']): ?>
                             <div class="res-admin-note">💬 <?php echo htmlspecialchars($r['admin_note']); ?></div>
                             <?php endif; ?>
                         </div>
-                        <?php if($r['status']==='pending'): ?>
-                        <a href="student_reservation.php?cancel=<?php echo $r['id']; ?>" class="cancel-btn"
+                        <?php if ($r['status'] === 'pending'): ?>
+                        <a href="student_reservation.php?cancel=<?php echo $r['id']; ?>"
+                           class="cancel-btn"
                            onclick="return confirm('Cancel this reservation?')">Cancel</a>
                         <?php endif; ?>
                     </div>
@@ -408,143 +451,111 @@ $conn->close();
 </div>
 
 <script>
-const LABS_DATA = <?php echo json_encode($labs_seats_json); ?>;
+// Lab info (rows/cols) — seats are loaded via AJAX per date+lab
+const LABS_INFO = <?php echo json_encode($labs_info); ?>;
 let selectedSeatId = 0;
 
-function loadSeats(labName){
-    const picker = document.getElementById('seatPicker');
-    selectedSeatId = 0;
-    document.getElementById('selectedSeatId').value = 0;
-    document.getElementById('selectedBadge').classList.remove('show');
-    if(!labName || !LABS_DATA[labName]){ picker.style.display='none'; return; }
-    picker.style.display = '';
-    renderSeats(labName);
-}
-
-function refreshSeats(){
+// Called when lab OR date changes — reload seats via AJAX for the selected date
+function onLabOrDateChange() {
     const labName = document.getElementById('labSelect').value;
-    if(labName) loadSeats(labName);
+    const date    = document.getElementById('resDate').value;
+    resetSeatPicker();
+    if (!labName || !date || !LABS_INFO[labName]) {
+        document.getElementById('seatPicker').style.display = 'none';
+        return;
+    }
+    document.getElementById('seatPicker').style.display = '';
+    document.getElementById('seatGridEl').innerHTML = '<div class="loading-seats">Loading seats…</div>';
+
+    const lab = LABS_INFO[labName];
+    fetch(`student_reservation.php?ajax_seats=${lab.id}&date=${encodeURIComponent(date)}`)
+        .then(r => r.json())
+        .then(seats => renderSeats(seats, lab.cols))
+        .catch(() => {
+            document.getElementById('seatGridEl').innerHTML = '<div class="loading-seats">Could not load seats. Please refresh.</div>';
+        });
 }
 
-function renderSeats(labName){
-    const lab    = LABS_DATA[labName];
+function resetSeatPicker() {
+    selectedSeatId = 0;
+    document.getElementById('selectedSeatId').value = '0';
+    document.getElementById('selectedBadge').classList.remove('show');
+    document.getElementById('seatGridEl').innerHTML = '';
+    document.getElementById('seatPickerInfo').textContent = '';
+}
+
+function renderSeats(seats, cols) {
     const gridEl = document.getElementById('seatGridEl');
-    const info   = document.getElementById('seatPickerInfo');
-    if(!lab){ gridEl.innerHTML=''; return; }
     gridEl.innerHTML = '';
-
-    // Reset grid styling — rows are rendered as flex rows, not a flat CSS grid
-    gridEl.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
-
-    const cols = parseInt(lab.cols);
-    const half = Math.ceil(cols / 2); // aisle after this many columns
-
-    // Build a proper row-keyed map, sorted by row then col
+    cols = parseInt(cols);
+    const half   = Math.ceil(cols / 2);
     const rowMap = {};
-    lab.seats.forEach(s => {
+    seats.forEach(s => {
         const r = parseInt(s.row_pos);
-        if(!rowMap[r]) rowMap[r] = {};
+        if (!rowMap[r]) rowMap[r] = {};
         rowMap[r][parseInt(s.col_pos)] = s;
     });
 
-    let available = 0, taken = 0, maintenance = 0;
-
+    let avail = 0, taken = 0, maint = 0;
     Object.keys(rowMap).map(Number).sort((a,b)=>a-b).forEach(rnum => {
-        // One flex row per seat row
         const rowDiv = document.createElement('div');
-        rowDiv.style.cssText = 'display:flex;gap:5px;align-items:center;';
-
-        const colMap = rowMap[rnum];
-        // Iterate columns 1..cols in order
-        for(let c = 1; c <= cols; c++){
-            // Insert aisle spacer between left and right halves
-            if(c === half + 1){
-                const aisle = document.createElement('div');
-                aisle.style.cssText = 'width:18px;flex-shrink:0;';
-                rowDiv.appendChild(aisle);
+        rowDiv.className = 'seat-row-wrap';
+        const cm = rowMap[rnum];
+        for (let c = 1; c <= cols; c++) {
+            if (c === half + 1) {
+                const gap = document.createElement('div');
+                gap.className = 'aisle-gap';
+                rowDiv.appendChild(gap);
             }
-
-            const seat = colMap[c];
-            if(!seat){
-                // Missing seat — render an invisible placeholder to keep alignment
+            const seat = cm[c];
+            if (!seat) {
                 const ph = document.createElement('div');
-                ph.style.cssText = 'width:46px;height:46px;flex-shrink:0;';
-                rowDiv.appendChild(ph);
-                continue;
+                ph.style.cssText = 'width:42px;height:42px;flex-shrink:0;';
+                rowDiv.appendChild(ph); continue;
             }
-
-            const isInactive = parseInt(seat.is_active) === 0;        // admin disabled
-            const isReserved = parseInt(seat.is_taken)  > 0;          // reserved today
-            const isUnavailable = isInactive || isReserved;
-
+            const isInactive = parseInt(seat.is_active) === 0;
+            const isTaken    = parseInt(seat.is_taken) > 0;
             const btn = document.createElement('button');
-            btn.type  = 'button';
-            btn.style.cssText = 'width:46px;height:46px;flex-shrink:0;border-radius:9px;border:2px solid transparent;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:9px;font-weight:800;font-family:Outfit,sans-serif;cursor:pointer;transition:all .2s;';
-
-            let icon, cls, titleText;
-            if(isInactive){
-                // Admin-disabled: maintenance
-                icon      = '🔧';
-                titleText = `Seat ${seat.seat_number} — Under Maintenance`;
-                btn.style.background     = 'rgba(239,68,68,.10)';
-                btn.style.borderColor    = 'rgba(239,68,68,.30)';
-                btn.style.color          = '#b91c1c';
-                btn.style.cursor         = 'not-allowed';
-                btn.disabled = true;
-                maintenance++;
-            } else if(isReserved){
-                // Reserved by another student
-                icon      = '👤';
-                titleText = `Seat ${seat.seat_number} — Already Reserved`;
-                btn.style.background     = 'rgba(245,158,11,.12)';
-                btn.style.borderColor    = 'rgba(245,158,11,.35)';
-                btn.style.color          = '#92400e';
-                btn.style.cursor         = 'not-allowed';
-                btn.disabled = true;
+            btn.type = 'button';
+            if (isInactive) {
+                btn.className = 'seat-btn taken';
+                btn.innerHTML = '<span class="seat-icon">🔧</span>' + seat.seat_number;
+                btn.disabled  = true; btn.title = `Seat ${seat.seat_number} — Maintenance`;
+                maint++;
+            } else if (isTaken) {
+                btn.className = 'seat-btn taken';
+                btn.innerHTML = '<span class="seat-icon">👤</span>' + seat.seat_number;
+                btn.disabled  = true; btn.title = `Seat ${seat.seat_number} — Already Reserved`;
                 taken++;
             } else {
-                // Available
-                icon      = '🖥️';
-                titleText = `Seat ${seat.seat_number} — Available`;
-                btn.style.background  = 'rgba(34,197,94,.15)';
-                btn.style.borderColor = 'rgba(34,197,94,.40)';
-                btn.style.color       = '#15803d';
-                btn.onclick = () => selectSeat(seat.id, seat.seat_number, btn);
-                available++;
+                btn.className = 'seat-btn available';
+                btn.innerHTML = '<span class="seat-icon">🖥️</span>' + seat.seat_number;
+                btn.title     = `Seat ${seat.seat_number} — Available`;
+                btn.onclick   = () => selectSeat(seat.id, seat.seat_number, btn);
+                avail++;
             }
-
-            btn.innerHTML = `<span style="font-size:15px;margin-bottom:1px;">${icon}</span>${seat.seat_number}`;
-            btn.title = titleText;
             rowDiv.appendChild(btn);
         }
         gridEl.appendChild(rowDiv);
     });
 
-    // Update counter info
-    let parts = [`${available} available`];
-    if(taken)       parts.push(`${taken} reserved`);
-    if(maintenance) parts.push(`${maintenance} maintenance`);
-    info.textContent = parts.join(' · ');
+    let parts = [`${avail} available`];
+    if (taken) parts.push(`${taken} reserved`);
+    if (maint) parts.push(`${maint} maintenance`);
+    document.getElementById('seatPickerInfo').textContent = parts.join(' · ');
 }
 
-function selectSeat(seatId, seatNum, btn){
-    // Deselect previous
-    document.querySelectorAll('#seatGridEl button').forEach(b => {
-        if(b.dataset.selected === '1'){
+function selectSeat(seatId, seatNum, btn) {
+    document.querySelectorAll('#seatGridEl .seat-btn').forEach(b => {
+        if (b.dataset.selected === '1') {
             b.dataset.selected = '0';
-            b.style.background  = 'rgba(34,197,94,.15)';
-            b.style.borderColor = 'rgba(34,197,94,.40)';
-            b.style.color       = '#15803d';
+            b.className = b.className.replace('selected','available');
         }
     });
-    // Select new
     btn.dataset.selected = '1';
-    btn.style.background  = '#1e6fe0';
-    btn.style.borderColor = '#1e6fe0';
-    btn.style.color       = '#ffffff';
-
+    btn.className = btn.className.replace('available','selected');
     selectedSeatId = seatId;
-    document.getElementById('selectedSeatId').value  = seatId;
+    document.getElementById('selectedSeatId').value       = seatId;
     document.getElementById('selectedSeatNum').textContent = seatNum;
     document.getElementById('selectedBadge').classList.add('show');
 }

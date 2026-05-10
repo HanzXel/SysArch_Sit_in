@@ -1,0 +1,19 @@
+# Database credentials — NEVER commit these
+Database/config.php
+
+# User uploaded profile pictures
+profile_pictures/*
+!profile_pictures/.gitkeep
+
+# PHP session files
+/tmp/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -9,6 +9,22 @@
 </head>
 <body class="register-page">
 
+<?php
+session_start();
+require_once 'Database/csrf.php';
+
+$error_messages = [
+    'password_mismatch' => 'Password and Confirm Password do not match.',
+    'password_short'    => 'Password must be at least 8 characters.',
+    'invalid_email'     => 'Please enter a valid email address.',
+    'id_exists'         => 'That ID number is already registered.',
+    'email_exists'      => 'That email address is already registered.',
+    'server'            => 'A server error occurred. Please try again.',
+];
+$error_code = $_GET['error'] ?? '';
+$error_msg  = $error_messages[$error_code] ?? '';
+?>
+
 <nav class="navbar">
     <div class="nav-left">
         <img class="logo_landing" src="pictures/uclogo.png" alt="UC Logo">
@@ -16,16 +32,6 @@
     </div>
     <ul class="nav-right">
         <li><a href="landing.php">Home</a></li>
-        <li class="dropdown">
-            <a href="#" class="dropbtn">Community ▾</a>
-            <div class="dropdown-content">
-                <a href="#">Announcements</a>
-                <a href="#">Events</a>
-                <a href="#">Forums</a>
-                <a href="#">Guidelines</a>
-            </div>
-        </li>
-        <li><a href="#">About</a></li>
         <li><a href="login.php">Login</a></li>
         <li><a href="registration.php">Register</a></li>
     </ul>
@@ -36,19 +42,27 @@
         <h2>Create Account</h2>
         <p class="auth-subtitle">Fill in your details to register</p>
 
+        <?php if ($error_msg): ?>
+        <div class="error-message"><?php echo htmlspecialchars($error_msg); ?></div>
+        <?php endif; ?>
+
         <form action="Database/register.php" method="POST" onsubmit="return validateForm()">
+            <?php echo csrf_token(); ?>
 
             <label>ID Number</label>
-            <input type="text" name="id_number" placeholder="Enter your ID number" required>
+            <input type="text" name="id_number" placeholder="Enter your ID number"
+                   maxlength="50" required>
 
             <label>Last Name</label>
-            <input type="text" name="last_name" placeholder="Enter last name" required>
+            <input type="text" name="last_name" placeholder="Enter last name"
+                   maxlength="100" required>
 
             <label>First Name</label>
-            <input type="text" name="first_name" placeholder="Enter first name" required>
+            <input type="text" name="first_name" placeholder="Enter first name"
+                   maxlength="100" required>
 
             <label>Middle Name <span style="color:var(--gray-300);font-weight:400">(optional)</span></label>
-            <input type="text" name="middle_name" placeholder="Enter middle name">
+            <input type="text" name="middle_name" placeholder="Enter middle name" maxlength="100">
 
             <label>Course</label>
             <select name="course" required>
@@ -64,7 +78,7 @@
                 <option value="BS Mechanical Engineering">BS Mechanical Engineering</option>
                 <option value="BS Industrial Engineering">BS Industrial Engineering</option>
                 <option value="BS Commerce">BS Commerce</option>
-                <option value="BS Hotel & Restaurant Management">BS Hotel & Restaurant Management</option>
+                <option value="BS Hotel &amp; Restaurant Management">BS Hotel &amp; Restaurant Management</option>
                 <option value="BS Tourism Management">BS Tourism Management</option>
                 <option value="BS Elementary Education">BS Elementary Education</option>
                 <option value="BS Secondary Education">BS Secondary Education</option>
@@ -84,22 +98,20 @@
             </select>
 
             <label>Email Address</label>
-            <input type="email" name="email" placeholder="example@gmail.com" required>
+            <input type="email" name="email" placeholder="example@gmail.com"
+                   maxlength="100" required autocomplete="email">
 
-            <label>Password</label>
-            <input type="password" name="password" required>
+            <label>Password <span style="color:var(--gray-300);font-weight:400">(min. 8 characters)</span></label>
+            <input type="password" name="password" minlength="8" required autocomplete="new-password">
 
             <label>Confirm Password</label>
-            <input type="password" name="confirm_password" required>
+            <input type="password" name="confirm_password" minlength="8" required autocomplete="new-password">
 
             <label>Address</label>
-            <textarea rows="3" name="address" placeholder="Enter your address" required></textarea>
+            <textarea rows="3" name="address" placeholder="Enter your address"
+                      maxlength="500" required></textarea>
 
             <button type="submit">Create Account</button>
-
-            <div id="successMessage" class="success-message">
-                Account created successfully! Redirecting to login...
-            </div>
         </form>
 
         <p class="auth-footer">
@@ -112,6 +124,10 @@
 function validateForm() {
     const password = document.getElementsByName('password')[0].value;
     const confirm  = document.getElementsByName('confirm_password')[0].value;
+    if (password.length < 8) {
+        alert('Password must be at least 8 characters.');
+        return false;
+    }
     if (password !== confirm) {
         alert('Passwords do not match!');
         return false;
