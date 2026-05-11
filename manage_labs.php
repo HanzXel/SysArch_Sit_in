@@ -89,10 +89,10 @@ if (isset($_GET['toggle_seat'])) {
     csrf_verify();
     $seat_id = (int) $_GET['toggle_seat'];
     $lab_id  = (int) $_GET['lab'];
-    $conn->prepare("UPDATE seats SET is_active=1-is_active WHERE id=?")->execute() ?: null;
     $upd = $conn->prepare("UPDATE seats SET is_active=1-is_active WHERE id=?");
     $upd->bind_param("i", $seat_id);
     $upd->execute();
+    $upd->close();
     header("Location: manage_labs.php?lab=$lab_id&toggled=1"); exit;
 }
 
@@ -510,8 +510,3 @@ setInterval(refreshSeats, 30000);
 </script>
 </body>
 </html>
-<?php
-// Helper: CSRF token as a query-string value (for GET-action links like toggle/delete)
-function csrf_token_qs(): string {
-    return 'csrf_token=' . urlencode($_SESSION['csrf_token']);
-}
